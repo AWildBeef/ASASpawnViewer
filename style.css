@@ -435,6 +435,14 @@ body{
     width:42px;
     height:42px;
   }
+  .leaflet-control.map-dock .dock-btn{
+    width: 42px;
+    height: 42px;
+  }
+  .leaflet-control-zoom.zoom-horizontal a{
+    width:34px;
+    height:34px;
+  }
 }
 
 
