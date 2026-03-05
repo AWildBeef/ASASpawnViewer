@@ -24,7 +24,7 @@ function downshiftStepsForMinPct(pct) {
 const RARITY_ORDER = ["very common", "common", "uncommon", "very uncommon", "rare", "very rare"];
 
 const MIN_GLOBAL_DOWNSHIFT = [
-  [2,  6],
+  [3,  6],
 ];
 
 function fitOptionsForUI() {
@@ -59,8 +59,8 @@ function rarityFromWeight(w) {
   return "very rare";
 }
 
-function downshiftStepsForMin(bestSharedMin) {
-  const m = Number(bestSharedMin || 0);
+function downshiftStepsForTotalMin(totalMin) {
+  const m = Number(totalMin || 0);
   if (m <= 0) return 0;
   for (const [thr, steps] of MIN_GLOBAL_DOWNSHIFT) {
     if (m <= thr) return steps;
@@ -76,23 +76,6 @@ function downgradeRarity(label, steps) {
   return RARITY_ORDER[j];
 }
 
-function applyRarityToConfig(cfg) {
-  const dinos = cfg?.dinos || {};
-  for (const d of Object.values(dinos)) {
-    for (const entry of (d.entries || [])) {
-      const base = rarityFromWeight(entry.weight ?? 0);
-
-      // Prefer exporter-provided global downshift
-      const globalSteps =
-        (entry.minRarityDownshift != null)
-          ? Number(entry.minRarityDownshift || 0)
-          : downshiftStepsForMin(entry.bestSharedMin ?? 0);
-
-      entry.rarity = downgradeRarity(base, globalSteps);
-    }
-  }
-}
-
 function normalizePoiType(type) {
   const raw = String(type || "").toLowerCase();
   if (raw.includes("obelisk") && raw.includes("blue")) return "obelisk_blue";
@@ -102,7 +85,40 @@ function normalizePoiType(type) {
   return raw;
 }
 // ============================================================
-// DRAWING TUNING
+// SUPPLY CRATE TEST
+
+let showSupplyCrates = false;
+let supplyCrateData = null;        // can be "old" summary OR compact {t,p}
+let supplyCrateLayer = null;       // Leaflet layer group (still unused; you use mapObj.supplyLayer)
+
+function clamp01(v){ return Math.max(0, Math.min(1, v)); }
+
+// world (ARK) -> map pixel (Leaflet CRS.Simple)
+function worldToMapPixel(p, world) {
+  const w = world?.w ?? 0;
+  const h = world?.h ?? 0;
+
+  const lonOrigin = world?.lonOrigin;
+  const lonScale  = world?.lonScale;
+  const latOrigin = world?.latOrigin;
+  const latScale  = world?.latScale;
+
+  if (![w,h,lonOrigin,lonScale,latOrigin,latScale].every(Number.isFinite)) return null;
+
+  const nx = (Number(p.x) - lonOrigin) / (lonScale * 1000);
+  const ny = (Number(p.y) - latOrigin) / (latScale * 1000);
+
+  const x = clamp01(nx) * w;
+  const y = (1 - clamp01(ny)) * h;   // flip Y for Leaflet
+
+  return { x, y };
+}
+
+
+
+
+
+
 // ============================================================
 const BOX_TO_POINT_AREA_THRESHOLD = 1_000;
 const BOX_TO_POINT_MIN_DIM = 10;
@@ -123,7 +139,7 @@ const MAPS = [
     id: "Astraeos",
     file: "data/Astraeos.json",
     backgrounds: [
-      { id: "hand", label: "In Game",   url: "maps/astraeos_ingame.webp" },
+      { id: "hand", label: "In Game",   url: "maps/Astraeos_IngameMap.webp" },
       { id: "sat",  label: "Satellite", url: "maps/astraeos.webp" }
     ],
     defaultBg: "sat"
@@ -133,64 +149,36 @@ const MAPS = [
 // ============================================================
 // SOURCES (Official + Mods)
 // ============================================================
-const SOURCES = [
-  { id: "official", name: "Official", order: 100},
-  { id: "runicwyverns", name: "Runic Wyverns", file: "data/mods/RunicWyverns.json" },
-  { id: "ARKOLOGYOEHapipalus", name: "ARKOLOGY: OE - Hapipalus", file: "data/mods/ARKOLOGYOEHapipalus.json",
-    group: "ARKOLOGY" },
-  { id: "Desolatitan", name: "ARKOLOGY: OE - Desolatitan", file: "data/mods/Desolatitan.json",
-    group: "ARKOLOGY" },
-  { id: "PrehistoricBeasts4", name: "Prehistoric Beasts Part IV", file: "data/mods/PrehistoricBeasts4.json",
-    group: "Prehistoric Beasts" },
-  { id: "PrehistoricBeasts5", name: "Prehistoric Beasts Part V", file: "data/mods/PrehistoricBeasts5.json",
-    group: "Prehistoric Beasts" },
-  { id: "PrehistoricBeasts3", name: "Prehistoric Beasts Part III", file: "data/mods/PrehistoricBeasts3.json",
-    group: "Prehistoric Beasts" },
-  { id: "PrehistoricBeasts2", name: "Prehistoric Beasts Part II", file: "data/mods/PrehistoricBeasts2.json",
-    group: "Prehistoric Beasts" },
-  { id: "PrehistoricBeasts1", name: "Prehistoric Beasts", file: "data/mods/PrehistoricBeasts1.json",
-    group: "Prehistoric Beasts" },
-  { id: "Xyphias'CreaturesHatzegopteryx", name: "Xyphias' Creatures: Hatzegopteryx", file: "data/mods/Xyphias'CreaturesHatzegopteryx.json",
-    group: "Xyphias' Creatures" },
-  { id: "Xyphias'CreaturesMeiolania", name: "Xyphias' Creatures: Meiolania", file: "data/mods/Xyphias'CreaturesMeiolania.json",
-    group: "Xyphias' Creatures" },
-  { id: "Xyphias'CreaturesMischoptera", name: "Xyphias' Creatures: Mischoptera", file: "data/mods/Xyphias'CreaturesMischoptera.json",
-    group: "Xyphias' Creatures" },
-  { id: "Xyphias'CreaturesMegistotherium", name: "Xyphias' Creatures: Megistotherium", file: "data/mods/Xyphias'CreaturesMegistotherium.json",
-    group: "Xyphias' Creatures" },
-  { id: "Xyphias'CreaturesCharnia", name: "Xyphias' Creatures: Charnia", file: "data/mods/Xyphias'CreaturesCharnia.json",
-    group: "Xyphias' Creatures" },
-  { id: "Xyphias'CreaturesDickinsonia", name: "Xyphias' Creatures: Dickinsonia", file: "data/mods/Xyphias'CreaturesDickinsonia.json",
-    group: "Xyphias' Creatures" },
-  { id: "Xyphias'CreaturesEnantiophoenix", name: "Xyphias' Creatures: Enantiophoenix", file: "data/mods/Xyphias'CreaturesEnantiophoenix.json",
-    group: "Xyphias' Creatures" },
-  { id: "Vetulicolians", name: "Xyphias' Creatures: Vetulicolians", file: "data/mods/Vetulicolians.json",
-    group: "Xyphias' Creatures" },
-  { id: "TheSunkenWorldAdditions", name: "The Sunken World Additions", file: "data/mods/TheSunkenWorldAdditions.json" },
-  { id: "Skyshroud", name: "Isle of Myths: Skyshroud Drakara", file: "data/mods/Skyshroud.json",
-    group: "Isle of Myths" },
-  { id: "WildARK", name: "Additional Creatures: Wild Ark", file: "data/mods/WildARK.json",
-    group: "Additional Creatures" },
-  { id: "ASAAquaria", name: "Additional Creatures: Aquaria", file: "data/mods/ASAAquaria.json",
-    group: "Additional Creatures" },
-  { id: "EndemicsMod", name: "Additional Creatures: Endemics", file: "data/mods/EndemicsMod.json",
-    group: "Additional Creatures" },
-  { id: "IoMSuchomimus", name: "Isle of Myths: Suchomimus", file: "data/mods/IoMSuchomimus.json",
-    group: "Isle of Myths" },
-  { id: "BSSpearcrest", name: "Isle of Myths: Spearcrest", file: "data/mods/BSSpearcrest.json" },
-  { id: "IoMOxalaia", name: "Isle of Myths: Oxalaia", file: "data/mods/IoMOxalaia.json",
-    group: "Isle of Myths" },
-  { id: "WAK_Spinosaurus", name: "BigAL's: WAK Spinosaurus", file: "data/mods/WAK_Spinosaurus.json",
-    group: "Big AL's" },
-  { id: "MeraxesTLC", name: "BigAL's: Meraxes", file: "data/mods/MeraxesTLC.json",
-    group: "Big AL's" },
-  { id: "JumpingSpider", name: "Cyrus' Critters: [Cuter TLC] Jumping Spider", file: "data/mods/JumpingSpider.json",
-    group: "Cyrus' Critters" },
-  { id: "CyrusGecko", name: "Cyrus' Critters: Magna Gecko", file: "data/mods/CyrusGecko.json",
-    group: "Cyrus' Critters" },
-  { id: "Redpanda", name: "Cyrus's Critters: Redpanda", file: "data/mods/Redpanda.json",
-    group: "Cyrus' Critters" },
-];
+let SOURCES = [];
+
+
+async function buildSources() {
+  const registry = await (await fetch("mods_registry.json")).json();
+
+  const mods = (registry.mods || []).map(m => ({
+    id: String(m.id),
+    name: m.name,
+    file: `data/mods/${m.slug}.json`,
+    ...(m.group ? { group: m.group } : {})
+  }));
+
+  mods.sort((a,b)=>a.name.localeCompare(b.name));
+
+  return [
+    { id:"official", name:"Official", order:100 },
+    ...mods
+  ];
+}
+
+// ============================================================
+// CURRENT RENDER CACHE (for smooth toggle redraws)
+// ============================================================
+let currentRender = {
+  mode: null,       // "dino" | "entry"
+  cfg: null,        // the cfg currently being drawn
+  dinoKey: null,    // "__tmp__" in grouped dino view, real key in other cases
+  entryClass: null, // entry mode selection
+};
 
 // ============================================================
 // STATE
@@ -215,6 +203,9 @@ const lastSelection = {
 };
 
 let showPois = true;  // default on
+
+let currentNameToBps = null;   // Map(displayName -> [bp...])
+let currentNames = null;       // [displayName...]
 
 // Remember drill path per dropdown instance
 const drillState = {
@@ -245,10 +236,208 @@ function setLegendOpen(open){
   el.style.display = showRarityLegend ? "" : "none";
 }
 
+const ddScrollMemory = {}; // key -> scrollTop number
+
+function ddKeyForDinoList() {
+  return `dinoSelect::${currentViewMode}::${activeSourceId}::${currentMapId}`;
+}
+
+// ============================================================
+// PLAYER START TEST
+
+let showPlayerStarts = false;
+let playerStartsData = null;     // loaded JSON
+// uses mapObj.playerStartLayer (created in initMap)
+
+function drawPlayerStarts() {
+  if (!mapObj?.playerStartLayer) return;
+
+  mapObj.playerStartLayer.clearLayers();
+  if (!showPlayerStarts) return;
+  if (!playerStartsData) return;
+
+  // Your converted file can be either:
+  //  A) { points:[{px,py,label,...}, ...] }
+  //  B) { regions:{...} } (nested)
+  // We'll support both quickly.
+
+  const pts = [];
+
+  if (Array.isArray(playerStartsData.points)) {
+    pts.push(...playerStartsData.points);
+  } else if (playerStartsData.regions && typeof playerStartsData.regions === "object") {
+    for (const [regionName, region] of Object.entries(playerStartsData.regions)) {
+      for (const p of (region?.points || [])) {
+        pts.push({ ...p, _region: regionName });
+      }
+    }
+  }
+
+  for (const p of pts) {
+    const x = Number(p.px ?? p.x);
+    const y = Number(p.py ?? p.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+    const title =
+      p.label ||
+      p.name ||
+      p.id ||
+      p._region ||
+      "Player Start";
+
+    L.circleMarker([y, x], {
+      radius: 3,
+      weight: 1,
+      opacity: 1,
+      fillOpacity: 0.85
+    })
+      .addTo(mapObj.playerStartLayer)
+      .bindTooltip(title, { direction: "top", opacity: 0.95 });
+  }
+}
+
+
+// ============================================================
+// INFO PANEL TABS (Dino panel only for now)
+// ============================================================
+
+// Feature flags
+const ENABLE_DINO_TABS = {
+  spawns: true,
+  stats:  true,
+  loot:   false,
+  info:   false,
+};
+
+const ALL_INFO_TABS = [
+  { id: "spawns", label: "Spawns" },
+  { id: "stats",  label: "Stats"  },
+  { id: "loot",   label: "Loot"   },
+  { id: "info",   label: "Info"   },
+];
+
+// Only show enabled tabs
+const INFO_TABS = ALL_INFO_TABS.filter(t => ENABLE_DINO_TABS[t.id]);
+
+// Default tab: first enabled
+let infoTab = INFO_TABS[0]?.id || "spawns";
+
+function setInfoTab(id){
+  const order = INFO_TABS.map(t => t.id);
+
+  // if requested tab isn't enabled, fall back to first enabled
+  infoTab = order.includes(id) ? id : (order[0] || "spawns");
+
+  const panel = document.getElementById("dinoInfoPanel");
+  const body  = panel?.querySelector(".fp-body");
+  if (!body) return;
+
+  body.querySelectorAll(".fp-tab").forEach(b => {
+    b.classList.toggle("is-on", b.dataset.tab === infoTab);
+  });
+
+  body.querySelectorAll(".fp-dot").forEach(d => {
+    d.classList.toggle("is-on", d.dataset.dot === infoTab);
+  });
+
+  const track = body.querySelector(".fp-track");
+  if (track) {
+    const i = Math.max(0, order.indexOf(infoTab));
+    track.style.transform = `translateX(${-i * 100}%)`;
+  }
+}
+
+function mountInfoSwipe(el){
+  if (!el) return;
+
+  // Prevent Leaflet from eating gestures inside this region
+  try {
+    L?.DomEvent?.disableClickPropagation?.(el);
+    L?.DomEvent?.disableScrollPropagation?.(el);
+  } catch {}
+
+  const order = INFO_TABS.map(t => t.id);
+
+  const EDGE_GUARD_PX = 22;  // leave this for iOS "back" swipe
+  const SWIPE_MIN_PX  = 40;  // distance threshold
+  const SWIPE_MAX_Y   = 60;  // if vertical movement is bigger than this, bail
+
+  let sx = 0, sy = 0;
+  let tracking = false;
+  let decided = false;
+  let isHorizontal = false;
+
+  function idxOf(tab){ return Math.max(0, order.indexOf(tab)); }
+
+  el.addEventListener("touchstart", (e) => {
+    if (!e.touches || e.touches.length !== 1) return;
+
+    const t = e.touches[0];
+
+    // If they start near the left edge, don't fight iOS back gesture
+    if (t.clientX <= EDGE_GUARD_PX) {
+      tracking = false;
+      return;
+    }
+
+    tracking = true;
+    decided = false;
+    isHorizontal = false;
+    sx = t.clientX;
+    sy = t.clientY;
+  }, { passive: true });
+
+  el.addEventListener("touchmove", (e) => {
+    if (!tracking || !e.touches || e.touches.length !== 1) return;
+
+    const t = e.touches[0];
+    const dx = t.clientX - sx;
+    const dy = t.clientY - sy;
+
+    if (!decided) {
+      // decide intent once
+      if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+        decided = true;
+        isHorizontal = Math.abs(dx) > Math.abs(dy);
+      }
+    }
+
+    // If horizontal swipe, prevent page from treating it as scroll/back
+    if (decided && isHorizontal) {
+      e.preventDefault(); // requires passive:false
+    }
+  }, { passive: false });
+
+  el.addEventListener("touchend", (e) => {
+    if (!tracking) return;
+    tracking = false;
+
+    // touchend has changedTouches
+    const t = e.changedTouches?.[0];
+    if (!t) return;
+
+    const dx = t.clientX - sx;
+    const dy = t.clientY - sy;
+
+    if (Math.abs(dy) > SWIPE_MAX_Y) return;
+    if (Math.abs(dx) < SWIPE_MIN_PX) return;
+
+    const i = idxOf(infoTab);
+
+    // dx < 0 => swipe left => next page
+    // dx > 0 => swipe right => previous page
+    const nextIndex = (dx < 0)
+      ? (i + 1) % order.length
+      : (i - 1 + order.length) % order.length;
+
+    setInfoTab(order[nextIndex]);
+  }, { passive: true });
+}
+
 // ============================================================
 // SETTINGS
 // ============================================================
-let useRarityForMods = true; // default; set to false if you want “mod style” by default
+let useRarityForMods = true; // default; set to false if you want "mod style" by default
 
 const jsonCache = {};
 
@@ -257,7 +446,7 @@ async function loadJSON(path) {
 
   if (jsonCache[url]) return jsonCache[url];
 
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to load ${path}: ${res.status}`);
 
   const data = await res.json();
@@ -274,9 +463,794 @@ let modGlowEnabled = false;
 // per-dino entry visibility toggles
 let entryVisibility = {}; // key: `${sourceId}::${mapId}::${dinoKey}::${entryIndex}` => boolean
 
+
 // ============================================================
 // HELPERS
 // ============================================================
+
+const STAT_COLS = [
+  { key: "base", label: "Base" },
+  { key: "iw",   label: "Wild" },
+  { key: "it",   label: "Tamed" },
+  { key: "ta",   label: "Add" },
+  { key: "tm",   label: "Mult" },
+];
+
+// order + labels (fallback to raw key)
+const STAT_ORDER = [
+  "Health",
+  "Stamina",
+  "Oxygen",
+  "Food",
+  "Water",
+  "Weight",
+  "MeleeDamageMultiplier",
+  "SpeedMultiplier",
+  "CraftingSpeedMultiplier",
+];
+
+const STAT_LABEL = {
+  Health: "Health",
+  Stamina: "Stamina",
+  Oxygen: "Oxygen",
+  Food: "Food",
+  Water: "Water",
+  Weight: "Weight",
+  MeleeDamageMultiplier: "Melee",
+  SpeedMultiplier: "Speed",
+  CraftingSpeedMultiplier: "Craft",
+};
+
+// ============================================================
+// ARK DEFAULT SERVER MULTIPLIERS
+// ============================================================
+
+const ARK_DEFAULT_MULT = {
+  Health:  { iw: 1, it: 0.2, ta: 0.14, tm: 0.44 },
+  Stamina: { iw: 1, it: 1,   ta: 1, tm: 1 },
+  Oxygen:  { iw: 1, it: 1,   ta: 1, tm: 1 },
+  Food:    { iw: 1, it: 1,   ta: 1, tm: 1 },
+  Water:   { iw: 1, it: 1,   ta: 1, tm: 1 },
+  Weight:  { iw: 1, it: 1,   ta: 1, tm: 1 },
+  MeleeDamageMultiplier: { iw: 1, it: 0.17, ta: 0.14, tm: 0.44 },
+  SpeedMultiplier:       { iw: 1, it: 1, ta: 1, tm: 1 },
+  CraftingSpeedMultiplier:{ iw: 1, it: 1, ta: 1, tm: 1 },
+};
+
+function applyServerMultiplier(statKey, colKey, value) {
+  if (value == null) return value;
+
+  const mult =
+    ARK_DEFAULT_MULT?.[statKey]?.[colKey] ?? 1;
+
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+
+  return n * mult;
+}
+
+function computeDisplayValue(statKey, colKey, data, statsObj) {
+  const raw = data[colKey];
+
+  if (raw == null || raw === "") return null;
+
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return null;
+  
+  if (v < 0) {
+    return v;
+  }
+
+  const base = Number(data.base);
+
+  const mult =
+    ARK_DEFAULT_MULT?.[statKey]?.[colKey] ?? 1;
+
+  // ✅ negative values ignore server multipliers
+  const effectiveMult = (v < 0) ? 1 : mult;
+
+  // -----------------------------
+  // COLUMN RULES
+  // -----------------------------
+
+  // Wild = Base * (Iw * server)
+  if (colKey === "iw") {
+    if (!Number.isFinite(base)) return null;
+    return base * (v * effectiveMult);
+  }
+
+  // Tamed Increase = percent
+  if (colKey === "it") {
+    return v * effectiveMult;
+  }
+
+  // Additive
+  if (colKey === "ta") {
+    // Ta is stored as-is (decimal). Only apply server multiplier (unless negative rule blocks it).
+    return v * effectiveMult;
+  }
+
+  // Multiplier
+  if (colKey === "tm") {
+    return v * effectiveMult;
+  }
+
+  return v;
+}
+
+
+// stats arrays are [base, iw, it, ta, tm] (trimmed)
+function unpackStat(arr) {
+  const a = Array.isArray(arr) ? arr : [];
+  return {
+    base: a.length > 0 ? a[0] : null,
+    iw:   a.length > 1 ? a[1] : null,
+    it:   a.length > 2 ? a[2] : null,
+    ta:   a.length > 3 ? a[3] : null,
+    tm:   a.length > 4 ? a[4] : null,
+  };
+}
+
+function isMultiplierStat(statKey) {
+  return statKey === "MeleeDamageMultiplier"
+      || statKey === "SpeedMultiplier"
+      || statKey === "CraftingSpeedMultiplier";
+}
+
+function fmtStatNum(v) {
+  if (v == null || v === "") return "";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "";
+
+  // keep it compact but stable
+  const abs = Math.abs(n);
+  if (abs > 0 && abs < 0.001) return n.toPrecision(3);
+
+  // toFixed for stability, then trim *decimal* trailing zeros only
+  let s = n.toFixed(6);
+
+  // remove trailing zeros after decimal, but DO NOT touch integer trailing zeros
+  s = s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+
+  // optional: "-0" -> "0"
+  if (s === "-0") s = "0";
+
+  return s;
+}
+
+function fmtBaseCell(statKey, v) {
+  // Option: show multiplier base as percent (1.0 => 100%)
+  // If you don’t want that, just return fmtStatNum(v)
+  if (isMultiplierStat(statKey)) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "";
+    return `${fmtStatNum(n * 100)}%`;
+  }
+  return fmtStatNum(v);
+}
+
+function renderStatsTable(statsObj) {
+  if (!statsObj || typeof statsObj !== "object") {
+    return `<div style="color:var(--muted)">No stats found.</div>`;
+  }
+
+  // keys in preferred order, then any extras
+  const keys = [];
+  for (const k of STAT_ORDER) if (k in statsObj) keys.push(k);
+  for (const k of Object.keys(statsObj)) {
+    if (k.endsWith("_TBM")) continue; // ✅ ignore metadata keys
+    if (!keys.includes(k)) keys.push(k);
+  }
+
+  if (!keys.length) {
+    return `<div style="color:var(--muted)">No stats found.</div>`;
+  }
+
+  const header = `
+    <div class="statgrid">
+      <div class="statgrid-head">
+        <div class="statgrid-th">Stat</div>
+        ${STAT_COLS.map(c => `<div class="statgrid-th num">${escapeHtml(c.label)}</div>`).join("")}
+      </div>
+  `;
+
+  const rows = keys.map(statKey => {
+    const label = STAT_LABEL[statKey] || statKey;
+    const data = unpackStat(statsObj[statKey]);
+
+    const cells = STAT_COLS.map(c => {
+      let txt = "";
+
+      if (c.key === "base") {
+        txt = fmtBaseCell(statKey, data.base);
+      }
+      else if (c.key === "tm" && statKey === "Health" && statsObj.Health_TBM != null) {
+        // ✅ TBHM override for Health multiplier cell
+        const pct = fmtStatNum(Number(statsObj.Health_TBM) * 100);
+        txt = `TBHM: ${pct}%`;
+      }
+      else {
+        const eff = computeDisplayValue(statKey, c.key, data, statsObj);
+
+        if (eff == null) {
+          txt = "";
+        }
+        else if (c.key === "iw") {
+          // Wild is a flat number (already base-applied in computeDisplayValue)
+          txt = fmtStatNum(eff);
+        }
+        else if (c.key === "ta") {
+          // Ta: number for normal stats, percent for multiplier stats
+          if (isMultiplierStat(statKey)) {
+            txt = `${fmtStatNum(eff * 100)}%`;
+          } else {
+            txt = fmtStatNum(eff);
+          }
+        }
+        else {
+          // it + tm are always percents
+          txt = `${fmtStatNum(eff * 100)}%`;
+        }
+      }
+
+      const muted = txt ? "" : " muted";
+      return `<div class="statgrid-td num${muted}">${escapeHtml(txt || "--")}</div>`;
+    }).join("");
+    
+    return `
+      <div class="statgrid-row">
+        <div class="statgrid-td statname">
+          ${escapeHtml(label)}
+        </div>
+        ${cells}
+      </div>
+    `;
+
+  }).join("");
+
+  return header + rows + `</div>`;
+}
+
+function mergeStatsFromPicked(picked) {
+  // picked = array of per-bp dino objects
+  const out = {};
+  const have = new Set();
+
+  for (const d of (picked || [])) {
+    const s = d?.stats;
+    if (!s || typeof s !== "object") continue;
+
+    for (const [statKey, arr] of Object.entries(s)) {
+      if (!Array.isArray(arr)) {
+        out[statKey] = arr;
+        continue;
+      }
+      
+      have.add(statKey);
+
+      // Ensure target array exists
+      const tgt = out[statKey] ||= [];
+
+      // Merge index-by-index: take first non-null/finite we encounter
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i];
+        const ok = (v === null) || Number.isFinite(Number(v));
+        if (!ok) continue;
+
+        // If target slot is empty, fill it
+        if (tgt[i] === undefined) tgt[i] = v;
+      }
+    }
+  }
+
+  // Normalize: make missing slots explicit nulls (optional)
+  for (const k of have) {
+    const a = out[k];
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] === undefined) a[i] = null;
+    }
+  }
+
+  return Object.keys(out).length ? out : null;
+}
+
+function cleanName(s){
+  const x = String(s ?? "").trim();
+  return x.length ? x : "";
+}
+
+function labelsForDino(d){
+  const f = cleanName(d?.fName);
+  const m = cleanName(d?.mName);
+  const disp = cleanName(d?.displayName);
+
+  // If we have sex names, ONLY use those (no displayName)
+  const out = [];
+  if (f) out.push(f);
+  if (m && m.toLowerCase() !== f.toLowerCase()) out.push(m);
+
+  if (out.length) return out;
+
+  // fallback
+  return disp ? [disp] : [cleanName(d?.nameTag) || cleanName(d?.bpPath)];
+}
+
+function otherSexNameForSelected(d, selectedLabel){
+  const f = cleanName(d?.fName);
+  const m = cleanName(d?.mName);
+  const sel = cleanName(selectedLabel);
+
+  // If selected matches f, return m, and vice versa
+  if (!sel) return "";
+  if (f && sel.toLowerCase() === f.toLowerCase()) return m;
+  if (m && sel.toLowerCase() === m.toLowerCase()) return f;
+
+  // otherwise return both collapsed or nothing
+  if (f && m && f.toLowerCase() !== m.toLowerCase()) return `${f} / ${m}`;
+  return "";
+}
+
+
+async function fileExists(url) {
+  try {
+    const r = await fetch(`${url}?v=${ASSET_VER}`, { method: "HEAD", cache: "no-store" });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+function normBoxLite(b){
+  if (!b || typeof b !== "object") return null;
+  const x = Number(b.x), y = Number(b.y), w = Number(b.w), h = Number(b.h);
+  if (![x,y,w,h].every(Number.isFinite)) return null;
+  return { x, y, w, h };
+}
+function normPointLite(p){
+  if (!p || typeof p !== "object") return null;
+  const x = Number(p.x), y = Number(p.y);
+  if (![x,y].every(Number.isFinite)) return null;
+  return { x, y };
+}
+
+function ensureLeafletPanel({ id, title, position = "topright", collapsedByDefault = false }) {
+  if (!mapObj?.map) return null;
+
+  // If it already exists, reuse it
+  let existing = document.getElementById(id);
+  if (existing) return existing;
+
+  const Panel = L.Control.extend({
+    options: { position },
+    onAdd(map) {
+      const panel = L.DomUtil.create("div", "floating-panel leaflet-panel");
+      panel.id = id;
+
+      panel.innerHTML = `
+        <div class="fp-header">
+          <div class="fp-title">${title}</div>
+          <div class="fp-actions"></div>
+        </div>
+        <div class="fp-body"></div>
+      `;
+
+      // stop map interactions when using the panel
+      L.DomEvent.disableClickPropagation(panel);
+      L.DomEvent.disableScrollPropagation(panel);
+
+      // actions
+      const actions = panel.querySelector(".fp-actions");
+      installPanelTitleFitter(panel, {
+        minPx: 11,
+        maxPx: 17
+      });
+
+      const minBtn = createIconButton(CHEVRON_DOWN_ICON);
+      minBtn.dataset.action = "min";
+      minBtn.title = "Collapse";
+      minBtn.classList.add("fp-btn-chevron");
+
+      const hideBtn = createIconButton(CLOSE_ICON);
+      hideBtn.dataset.action = "hide";
+      hideBtn.title = "Hide";
+
+      actions.appendChild(minBtn);
+      actions.appendChild(hideBtn);
+
+      // collapse behavior
+      const body = panel.querySelector(".fp-body");
+      function setCollapsed(collapsed) {
+        panel.classList.toggle("collapsed", collapsed);
+      }
+
+      minBtn.onclick = () => setCollapsed(!panel.classList.contains("collapsed"));
+
+      hideBtn.onclick = () => {
+        panel.style.display = "none";
+        panel.dataset.hidden = "1";
+        updateDockToggles();
+      };
+
+      // default collapse state
+      panel.dataset.hidden = "0";
+      if (collapsedByDefault) setCollapsed(true);
+
+      return panel;
+    }
+  });
+
+  const ctrl = new Panel();
+  mapObj.map.addControl(ctrl);
+
+  return document.getElementById(id);
+}
+
+document.addEventListener("click", e => {
+
+  const el = e.target.closest(".copy-on-click");
+  if (!el) return;
+
+  const text =
+    el.dataset.copy ??
+    el.textContent ??
+    "";
+
+  navigator.clipboard.writeText(text.trim());
+
+  // --- SHOW COPIED BUBBLE ---
+  showCopiedBubble(el);
+
+});
+
+function showCopiedBubble(target){
+
+  const bubble = document.createElement("div");
+  bubble.className = "copy-bubble";
+  bubble.textContent = "Copied!";
+
+  document.body.appendChild(bubble);
+
+  const r = target.getBoundingClientRect();
+
+  bubble.style.left = (r.right + 6) + "px";
+  bubble.style.top  = (r.top + r.height/2 - 10) + "px";
+
+  requestAnimationFrame(()=>{
+    bubble.classList.add("show");
+  });
+
+  setTimeout(()=>{
+    bubble.classList.remove("show");
+    setTimeout(()=> bubble.remove(), 200);
+  }, 900);
+}
+
+function totalMinDesired(entry){
+  const mgrs = entry?.managers;
+  if (!mgrs || typeof mgrs !== "object") return 0;
+  let sum = 0;
+  for (const m of Object.values(mgrs)) {
+    sum += Number(m?.minDesired || 0);
+  }
+  return sum;
+}
+
+function applyRarityToConfig(cfg) {
+  const dinos = cfg?.dinos || {};
+  for (const d of Object.values(dinos)) {
+    for (const entry of (d.entries || [])) {
+      const base = rarityFromWeight(entry.weight ?? 0);
+
+      // Prefer exporter-provided global downshift if present
+      const exporterSteps =
+        (entry.minRarityDownshift != null)
+          ? Number(entry.minRarityDownshift || 0)
+          : null;
+
+      // Otherwise compute from total minDesired across all managers
+      const totalMin = totalMinDesired(entry);
+      const computedSteps = downshiftStepsForTotalMin(totalMin);
+
+      const globalSteps = (exporterSteps != null) ? exporterSteps : computedSteps;
+
+      // Optional debug fields
+      entry._rarityBase = base;
+      entry._globalSteps = globalSteps;
+      entry._totalMinDesired = totalMin;
+
+      entry.rarity = downgradeRarity(base, globalSteps);
+    }
+  }
+}
+
+function formatSpawnChances(chances) {
+  if (chances == null) return "";
+
+  // array of numbers (already percents)
+  if (Array.isArray(chances)) {
+    const parts = chances
+      .map(n => Number(n))
+      .filter(n => Number.isFinite(n));
+    return parts.length ? `Spawn chances: ${parts.map(n => `${fmt(n)}%`).join(", ")}` : "";
+  }
+
+  // string like "10, 20, 70" or "10%,20%,70%"
+  if (typeof chances === "string") {
+    const parts = chances
+      .split(",")
+      .map(s => s.trim().replace(/%$/, ""))
+      .filter(Boolean)
+      .map(s => Number(s))
+      .filter(n => Number.isFinite(n));
+
+    return parts.length ? `Spawn chances: ${parts.map(n => `${fmt(n)}%`).join(", ")}` : "";
+  }
+
+  // unknown shape
+  return "";
+}
+
+function drawGroupedDino(grouped, displayName) {
+  if (!grouped) return;
+
+  const dino = {
+    displayName,
+    fName: grouped.fName || "",
+    mName: grouped.mName || "",
+    bpPath: grouped.bps?.[0] || "",
+    additionalBpPathsToDisplay: grouped.bps?.slice(1) || [],
+    entries: grouped.entries || [],
+    
+    stats: grouped.stats || null,
+
+    nameTag: grouped.nameTag || "",
+    tameable: grouped.tameable,
+    breedable: grouped.breedable,
+    isAlpha: grouped.isAlpha,
+    isBoss: grouped.isBoss,
+    isBossMinion: grouped.isBossMinion,
+    dragWeight: grouped.dragWeight,
+    killXpBase: grouped.killXpBase
+    
+  };
+
+  const fakeCfg = { dinos: { __tmp__: dino } };
+  preprocessCfg(fakeCfg);
+
+  // ✅ cache what is currently being drawn so toggles can redraw map-only
+  currentRender.mode = "dino";
+  currentRender.cfg = fakeCfg;
+  currentRender.dinoKey = "__tmp__";
+  currentRender.entryClass = null;
+
+  drawDino(fakeCfg, "__tmp__");
+  renderInfoPanelForDino(fakeCfg, "__tmp__");
+}
+
+function buildNameIndex(dinosByBp) {
+  const nameToBps = new Map(); // label -> [bp...]
+  for (const [bp, d] of Object.entries(dinosByBp)) {
+    const labels = labelsForDino(d); // ✅ now can be [fName, mName]
+    for (const label of labels) {
+      if (!nameToBps.has(label)) nameToBps.set(label, []);
+      nameToBps.get(label).push(bp);
+    }
+  }
+
+  // stable sort within each label group (optional)
+  for (const [label, arr] of nameToBps) arr.sort();
+
+  // dropdown options
+  const names = [...nameToBps.keys()].sort((a,b)=>a.localeCompare(b));
+  return { nameToBps, names };
+}
+
+function isTrue01(v) {
+  // supports 1, "1", true
+  return v === 1 || v === "1" || v === true;
+}
+
+function fmtNum(v, decimals = 0) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  return decimals > 0 ? n.toFixed(decimals) : String(Math.round(n));
+}
+
+function mergeManagers(targetManagers, srcManagers) {
+  for (const [mgrId, m] of Object.entries(srcManagers || {})) {
+    if (!targetManagers[mgrId]) {
+      // deep-ish copy
+      targetManagers[mgrId] = {
+        minDesired: m.minDesired,
+        minDesiredPct: m.minDesiredPct,
+        boxes: [],
+        points: []
+      };
+    }
+    const t = targetManagers[mgrId];
+
+    if (Array.isArray(m.boxes))  t.boxes.push(...m.boxes);
+    if (Array.isArray(m.points)) t.points.push(...m.points);
+
+    // optional: keep the max (or recompute) if these differ
+    if (typeof m.minDesired === "number") t.minDesired = Math.max(t.minDesired ?? 0, m.minDesired);
+    if (typeof m.minDesiredPct === "number") t.minDesiredPct = Math.max(t.minDesiredPct ?? 0, m.minDesiredPct);
+  }
+}
+
+function buildGroupedSelection(mapData, bps) {
+  const picked = bps.map(bp => mapData.dinos[bp]).filter(Boolean);
+
+  function firstNonEmpty(arr, fn) {
+    for (const x of arr) {
+      const v = fn(x);
+      if (v != null && String(v).trim() !== "") return v;
+    }
+    return "";
+  }
+
+  function isTrueLoose(v) {
+    if (v === true || v === 1 || v === "1") return true;
+    const s = String(v ?? "").trim().toLowerCase();
+    return s === "true" || s === "yes" || s === "y" || s === "t";
+  }
+
+  function anyTrue(arr, fn) {
+    return arr.some(x => isTrueLoose(fn(x)));
+  }
+
+  const out = {
+    displayName: picked[0]?.displayName || "Unknown",
+    bps: picked.map(d => d.bpPath || "").filter(Boolean),
+
+    // ✅ identity-ish fields
+    nameTag: firstNonEmpty(picked, d => d.nameTag ?? d.nametag),
+    fName: firstNonEmpty(picked, d => d.fName),
+    mName: firstNonEmpty(picked, d => d.mName),
+    tameable: anyTrue(picked, d => d.tameable),
+    breedable: anyTrue(picked, d => d.breedable),
+    isAlpha: anyTrue(picked, d => d.isAlpha),
+    isBoss: anyTrue(picked, d => d.isBoss),
+    isBossMinion: anyTrue(picked, d => d.isBossMinion),
+    dragWeight: firstNonEmpty(picked, d => d.dragWeight),
+    killXpBase: firstNonEmpty(picked, d => d.killXpBase),
+    stats: mergeStatsFromPicked(picked),
+
+    perBp: picked,
+    entries: []
+  };
+
+  // ---- merge entries by entryClass (your existing code, unchanged) ----
+  const entryMap = new Map();
+  for (const d of picked) {
+    for (const e of (d.entries || [])) {
+      const key = e.entryClass || e.entryName || "UNKNOWN_ENTRY";
+      if (!entryMap.has(key)) {
+        entryMap.set(key, {
+          entryClass: key,
+          managers: {},
+
+          // ✅ NEW: keep non-manager geometry too
+          boxes: [],
+          points: [],
+
+          // ✅ NEW: keep flags if they exist on entries
+          bIsCaveManager: false,
+          bForceUntameable: false,
+
+          weight: 0,
+          groupWeight: 0,
+          spawnMultiplier: e.spawnMultiplier,
+          spawnLimit: e.spawnLimit,
+          spawnChances: e.spawnChances,
+          byBp: {}
+        });
+      }
+
+      const m = entryMap.get(key);
+      m.weight += (Number(e.weight) || 0);
+      m.groupWeight += (Number(e.groupWeight) || 0);
+
+      if (e.managers && typeof e.managers === "object") {
+        mergeManagers(m.managers, e.managers);
+      } else {
+        // ✅ Mod style: geometry lives directly on the entry
+        if (Array.isArray(e.boxes))  m.boxes.push(...e.boxes.map(normBoxLite).filter(Boolean));
+        if (Array.isArray(e.points)) m.points.push(...e.points.map(normPointLite).filter(Boolean));
+      }
+
+// flags: any true wins
+m.bIsCaveManager = m.bIsCaveManager || (e.bIsCaveManager === true);
+m.bForceUntameable = m.bForceUntameable || (e.bForceUntameable === true);
+
+      const bpKey = d.bpPath || "UNKNOWN_BP";
+      m.byBp[bpKey] ??= { weight: 0, groupWeight: 0 };
+      m.byBp[bpKey].weight += (Number(e.weight) || 0);
+      m.byBp[bpKey].groupWeight += (Number(e.groupWeight) || 0);
+    }
+  }
+
+  out.entries = [...entryMap.values()].map(e => {
+    e.weight = +e.weight.toFixed(6);
+    e.groupWeight = +e.groupWeight.toFixed(6);
+    const base = rarityFromWeight(e.weight);
+    const totalMin = totalMinDesired(e);
+    const steps = downshiftStepsForTotalMin(totalMin);
+    e.rarity = downgradeRarity(base, steps);
+
+    const chancesText = formatSpawnChances(e.spawnChances);
+    e.display = {
+      weightText: `Entry Weight: ${e.groupWeight}`,
+      limitText: `Max % To Allow: ${(Number(e.spawnLimit)||0)*100}%`,
+      chanceText: chancesText
+    };
+    return e;
+  });
+
+  return out;
+}
+
+function renderDinoQuickInfo(dino, badgesEl, statsEl) {
+  // badges are the only required target
+  if (!badgesEl) return;
+
+  // Clear what exists
+  badgesEl.innerHTML = "";
+  if (statsEl) statsEl.innerHTML = "";
+
+  if (!dino || typeof dino !== "object") return;
+
+  // ----- Badges -----
+  const badges = [];
+
+  if (isTrue01(dino.isAlpha))      badges.push({ cls: "alpha",   label: "Alpha" });
+  if (isTrue01(dino.isBoss))       badges.push({ cls: "boss",    label: "Boss" });
+  if (isTrue01(dino.isBossMinion)) badges.push({ cls: "minion",  label: "Boss Minion" });
+
+  if (!isTrue01(dino.tameable))    badges.push({ cls: "tameable",  label: "Untameable" });
+  if (!isTrue01(dino.breedable))   badges.push({ cls: "breedable", label: "Unbreedable" });
+
+  for (const b of badges) {
+    const el = document.createElement("span");
+    el.className = `dino-badge ${b.cls}`;
+    el.textContent = b.label;
+    badgesEl.appendChild(el);
+  }
+
+  // ----- Stats (only if container exists) -----
+  const statBits = [];
+  if (statsEl) {
+    const drag = fmtNum(dino.dragWeight, 0);
+    const xp   = fmtNum(dino.killXpBase, 0);
+
+    if (drag !== null) statBits.push({ key: "Drag Weight:", val: drag });
+    if (xp !== null)   statBits.push({ key: "Kill XP:",     val: String(Number(xp) * 4) });
+
+    for (const s of statBits) {
+      const row = document.createElement("div");
+      row.className = "dino-statrow";
+      row.innerHTML = `
+        <div class="dino-statkey">${escapeHtml(s.key)}</div>
+        <div class="dino-statval">${escapeHtml(s.val)}</div>
+      `;
+      statsEl.appendChild(row);
+    }
+  }
+
+  // Show/hide pieces cleanly
+  badgesEl.style.display = badges.length ? "" : "none";
+  if (statsEl) statsEl.style.display = statBits.length ? "" : "none";
+
+  // Hide .dino-quick only if *everything present* is empty
+  const quick = badgesEl.closest(".dino-quick");
+  if (quick) {
+    const anyBadges = badges.length > 0;
+    const anyStats  = statBits.length > 0;
+    quick.style.display = (anyBadges || anyStats) ? "" : "none";
+  }
+}
+
 function buildSourceDrillTree() {
   const root = { label: "Sources", children: [] };
 
@@ -360,9 +1334,8 @@ function renderCopyLine(label, value) {
   return `
     <div class="info-row">
       <span class="info-label">${escapeHtml(label)}</span>
-      <button class="info-copy" data-copy="${escapeAttr(v)}" aria-label="Copy"></button>
     </div>
-    <div class="info-mono">${escapeHtml(v || "(none)")}</div>
+    <div class="info-mono copy-on-click" data-copy="${escapeAttr(v)}">${escapeHtml(v || "(none)")}</div>
   `;
 }
 
@@ -371,14 +1344,13 @@ function normSearch(s){
   return String(s || "").toLowerCase().replace(/[\s_-]/g,"");
 }
 
-function dinoSummaryForFancy(cfg, dinoKey){
-  const d = cfg?.dinos?.[dinoKey];
-  if (!d) return { entryCount: 0, label: dinoKey };
-
-  return {
-    entryCount: (d.entries || []).length,
-    label: (d.displayName || dinoKey),
-  };
+function dinoSummaryForFancy(cfg, displayName){
+  const bps = currentNameToBps?.get(displayName) || [];
+  let entryCount = 0;
+  for (const bp of bps) {
+    entryCount += (cfg?.dinos?.[bp]?.entries || []).length;
+  }
+  return { entryCount, label: displayName };
 }
 
 function rarityDotColor(rarity){
@@ -754,11 +1726,13 @@ function mountFancySelect({
     wrap.classList.add("open");
     search.value = "";
     list.querySelectorAll(".dd-item").forEach(el => (el.style.display = ""));
-    list.scrollTop = 0;
+    const scrollKey = ddKeyForDinoList();
+    list.scrollTop = ddScrollMemory[scrollKey] ?? 0;
     search.focus();
   }
 
   function close() {
+    ddScrollMemory[ddKeyForDinoList()] = list.scrollTop;
     wrap.classList.remove("open");
     btn.blur();
   }
@@ -920,6 +1894,11 @@ function mountFancyDinoSelect(cfg){
 
       list.appendChild(row);
     }
+    function saveScroll() {
+      ddScrollMemory[ddKeyForDinoList()] = list.scrollTop;
+    }
+
+    list.addEventListener("scroll", saveScroll, { passive: true });
   }
 
   function syncButton(){
@@ -938,14 +1917,34 @@ function mountFancyDinoSelect(cfg){
 
   function open(){
     wrap.classList.add("open");
+
+    // DON'T wipe search if you want it to stay; but if you do wipe it,
+    // do it before restoring scroll.
     search.value = "";
-    // show all items
-    list.querySelectorAll(".dd-item").forEach(el => el.style.display = "");
-    list.scrollTop = 0;
-    search.focus(); // note: iOS zoom fix is CSS: .dd-search{font-size:16px;}
+
+    // show all items (since search cleared)
+    list.querySelectorAll(".dd-item").forEach(el => (el.style.display = ""));
+    // DO NOT force list.scrollTop = 0 here
+
+    // Restore scroll AFTER layout (iOS needs this)
+    const key = ddKeyForDinoList();
+    const saved = ddScrollMemory[key] ?? 0;
+
+    requestAnimationFrame(() => {
+      // sometimes needs 2 frames on iOS when animating / display toggling
+      list.scrollTop = saved;
+      requestAnimationFrame(() => {
+        list.scrollTop = saved;
+      });
+    });
+
+    search.focus();
   }
 
   function close(){
+    // save even if they didn’t scroll this time
+    ddScrollMemory[ddKeyForDinoList()] = list.scrollTop;
+
     wrap.classList.remove("open");
     btn.blur();
   }
@@ -1088,6 +2087,86 @@ function iconForPoiType(type) {
   return icon;
 }
 
+function drawSupplyCrates() {
+  if (!mapObj?.supplyLayer) return;
+
+  mapObj.supplyLayer.clearLayers();
+  if (!showSupplyCrates) return;
+  if (!supplyCrateData || typeof supplyCrateData !== "object") return;
+
+  // ✅ Astraeos world settings (from PrimalWorldSettings)
+  const world = {
+    w: currentCfg?.imageSize?.width,
+    h: currentCfg?.imageSize?.height,
+    lonOrigin: -800000.0,
+    lonScale:  1625.8,
+    latOrigin: -800000.0,
+    latScale:  1625.8
+  };
+
+  // ---- COMPACT FORMAT: { t:[bp...], p:[{x,y,z,c:[[ti,w]...]}...] } ----
+  const isCompact =
+    Array.isArray(supplyCrateData.t) &&
+    Array.isArray(supplyCrateData.p);
+
+  if (isCompact) {
+    const types = supplyCrateData.t;
+
+    for (const pt of supplyCrateData.p) {
+      const px = worldToMapPixel(pt, world);
+      if (!px) continue;
+
+      // Build a helpful tooltip from the top few crate types at this point
+      const combos = Array.isArray(pt.c) ? pt.c : [];
+
+      const top = combos
+        .map(pair => ({ ti: Number(pair?.[0]), w: Number(pair?.[1] ?? 0) }))
+        .filter(x => Number.isFinite(x.ti) && x.ti >= 0 && x.ti < types.length)
+        .sort((a, b) => (b.w - a.w))
+        .slice(0, 4);
+
+      const pretty = (bp) => {
+        const last = String(bp || "").split("/").pop() || String(bp || "");
+        return last.replace(/_C$/i, "");
+      };
+
+      const title = top.length
+        ? top.map(x => `${pretty(types[x.ti])}${Number.isFinite(x.w) ? ` (${fmt(x.w)})` : ""}`).join(", ")
+        : "Supply Crate";
+
+      L.circleMarker([px.y, px.x], {
+        radius: 4,
+        weight: 1,
+        opacity: 1,
+        fillOpacity: 0.8
+      })
+        .addTo(mapObj.supplyLayer)
+        .bindTooltip(title, { direction: "top", opacity: 0.95 });
+    }
+
+    return;
+  }
+
+  // ---- OLD FORMAT (your previous summary map): { [crateBp]: {points:[{x,y,z}...]} } ----
+  for (const [crateBp, info] of Object.entries(supplyCrateData)) {
+    for (const p of (info?.points || [])) {
+      const px = worldToMapPixel(p, world);
+      if (!px) continue;
+
+      const title = crateBp.split("/").pop() || crateBp;
+
+      L.circleMarker([px.y, px.x], {
+        radius: 4,
+        weight: 1,
+        opacity: 1,
+        fillOpacity: 0.8
+      })
+        .addTo(mapObj.supplyLayer)
+        .bindTooltip(title, { direction: "top", opacity: 0.95 });
+    }
+  }
+}
+
 function drawPois(cfg) {
   if (!mapObj?.poiLayer) return;
 
@@ -1165,12 +2244,75 @@ function redrawSelected() {
   if (!currentCfg || !sel?.value) return;
 
   if (currentViewMode === "dino") {
-    drawDino(currentCfg, sel.value);
-    renderInfoPanelForDino(currentCfg, sel.value);
+    // ✅ selection is displayName now
+    const displayName = sel.value;
+    const bps = currentNameToBps?.get(displayName) || [];
+    const grouped = buildGroupedSelection(currentCfg, bps);
+    drawGroupedDino(grouped, displayName);
   } else {
     drawSpawnEntry(currentCfg, sel.value);
-    // later: renderInfoPanelForEntry(...)
+    renderInfoPanelForEntry(currentCfg, sel.value);
   }
+}
+
+function redrawMapOnly() {
+  if (!mapObj) return;
+
+  if (currentViewMode === "dino") {
+    // Prefer cached grouped cfg if we have it
+    if (currentRender.mode === "dino" && currentRender.cfg && currentRender.dinoKey) {
+      drawDino(currentRender.cfg, currentRender.dinoKey);
+      return;
+    }
+
+    // fallback: do the grouped build without re-rendering the panel
+    const sel = document.getElementById("dinoSelect");
+    if (!currentCfg || !sel?.value) return;
+
+    const displayName = sel.value;
+    const bps = currentNameToBps?.get(displayName) || [];
+    const grouped = buildGroupedSelection(currentCfg, bps);
+
+    const dino = {
+      displayName,
+      fName: grouped.fName || "",
+      mName: grouped.mName || "",
+      bpPath: grouped.bps?.[0] || "",
+      additionalBpPathsToDisplay: grouped.bps?.slice(1) || [],
+      entries: grouped.entries || [],
+      stats: grouped.stats || null,
+      nameTag: grouped.nameTag || "",
+      tameable: grouped.tameable,
+      breedable: grouped.breedable,
+      isAlpha: grouped.isAlpha,
+      isBoss: grouped.isBoss,
+      isBossMinion: grouped.isBossMinion,
+      dragWeight: grouped.dragWeight,
+      killXpBase: grouped.killXpBase
+    };
+
+    const fakeCfg = { dinos: { __tmp__: dino } };
+    preprocessCfg(fakeCfg);
+
+    currentRender.mode = "dino";
+    currentRender.cfg = fakeCfg;
+    currentRender.dinoKey = "__tmp__";
+    currentRender.entryClass = null;
+
+    drawDino(fakeCfg, "__tmp__");
+    return;
+  }
+
+  // entry mode: just redraw the entry shapes (panel stays as-is)
+  const sel = document.getElementById("dinoSelect");
+  if (!currentCfg || !sel?.value) return;
+
+  currentRender.mode = "entry";
+  currentRender.cfg = currentCfg;
+  currentRender.dinoKey = null;
+  currentRender.entryClass = sel.value;
+
+  drawSpawnEntry(currentCfg, sel.value);
 }
 
 function preloadImage(url) {
@@ -1311,7 +2453,7 @@ function renderDock(){
     return btn;
   };
 
-  // 1) BG button — only on Astraeos
+  // 1) BG button -- only on Astraeos
   if (isAstraeos) {
     const bgs = mapMeta.backgrounds;
     const def = bgs.find(x => x.id === mapMeta.defaultBg) || bgs[0];
@@ -1340,7 +2482,7 @@ function renderDock(){
     }
   }
 
-  // 2) Dino Info toggle — always available
+  // 2) Dino Info toggle -- always available
   mkBtn({
     title: "Toggle Dino Info",
     icon: `
@@ -1353,7 +2495,7 @@ function renderDock(){
     onClick: () => togglePanel("dinoInfoPanel")
   });
 
-    // 3) Mod Style toggle — only on mods
+    // 3) Mod Style toggle -- only on mods
   if (isMod) {
     mkBtn({
       title: "Toggle Mod Style",
@@ -1370,7 +2512,7 @@ function renderDock(){
     });
   }
 
-  // 4) POI toggle — only if this map has POIs (works for official + mods)
+  // 4) POI toggle -- only if this map has POIs (works for official + mods)
   const hasPois = !!(dockState.cfg?.pois?.tributeTerminals?.length);
   if (hasPois) {
     const poiBtn = mkBtn({
@@ -1391,7 +2533,65 @@ function renderDock(){
 
     poiBtn.classList.toggle("is-on", showPois);
   }
-  // 5) Rarity legend button — only makes sense when showing rarity colors
+  /*
+  const hasSupply = !!(
+    supplyCrateData &&
+    (
+      (Array.isArray(supplyCrateData.p) && supplyCrateData.p.length) ||   // compact
+      Object.keys(supplyCrateData).length                                  // old
+    )
+  );
+  if (hasSupply) {
+    const scBtn = mkBtn({
+      title: showSupplyCrates ? "Hide supply crate points" : "Show supply crate points",
+      icon: `
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path d="M12 2l3 6-3 3-3-3 3-6Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M9 8l3 3 3-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M7 12c0 5 5 10 5 10s5-5 5-10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      `,
+      onClick: (btn) => {
+        showSupplyCrates = !showSupplyCrates;
+        drawSupplyCrates();
+        btn.title = showSupplyCrates ? "Hide supply crate points" : "Show supply crate points";
+        btn.classList.toggle("is-on", showSupplyCrates);
+      }
+    });
+
+    scBtn.classList.toggle("is-on", showSupplyCrates);
+  }
+  
+  const hasPlayerStarts =
+    !!(playerStartsData && (
+      Array.isArray(playerStartsData.points) ||
+      (playerStartsData.regions && Object.keys(playerStartsData.regions).length)
+    ));
+
+  if (hasPlayerStarts) {
+    const psBtn = mkBtn({
+      title: showPlayerStarts ? "Hide player starts" : "Show player starts",
+      icon: `
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path d="M12 21s7-4.5 7-11a7 7 0 1 0-14 0c0 6.5 7 11 7 11Z"
+                fill="none" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 7v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M9.5 10.5 12 13l2.5-2.5" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      `,
+      onClick: (btn) => {
+        showPlayerStarts = !showPlayerStarts;
+        drawPlayerStarts();
+        btn.title = showPlayerStarts ? "Hide player starts" : "Show player starts";
+        btn.classList.toggle("is-on", showPlayerStarts);
+      }
+    });
+
+    psBtn.classList.toggle("is-on", showPlayerStarts);
+  }
+  */
+  // 5) Rarity legend button -- only makes sense when showing rarity colors
   mkBtn({
     title: showRarityLegend ? "Hide rarity legend" : "Show rarity legend",
     icon: `
@@ -1457,7 +2657,16 @@ function preprocessCfg(cfg) {
 
       // entry-level flags cached once
       const isCave = (e.bIsCaveManager === true);
-      const untame = (e.bForceUntameable === true);
+
+      // include dino blueprint untame flag too
+      const dinoUntameable =
+        d?.tameable === 0 ||
+        d?.tameable === false ||
+        d?.tameable === "0";
+
+      const untame =
+        (e.bForceUntameable === true) ||
+        dinoUntameable;
 
       if (mgrs) {
         e._mgrDraw = Object.entries(mgrs).map(([mgrId, mgr]) => {
@@ -1558,13 +2767,15 @@ function initMap(cfg) {
 
   // NEW: POIs always-on-top layer
   const poiLayer = L.layerGroup().addTo(map);
+  const supplyLayer = L.layerGroup().addTo(map);
+  const playerStartLayer = L.layerGroup().addTo(map);
   
   window.addEventListener("resize", () => {
     if (!mapObj?.map || !mapObj?.bounds) return;
     mapObj.map.fitBounds(mapObj.bounds, fitOptionsForUI());
   });
 
-  return { map, layer, caveLayer, poiLayer, overlay, bounds };
+  return { map, layer, caveLayer, poiLayer, supplyLayer, playerStartLayer, overlay, bounds };
 }
 function updateMapForCfg(cfg) {
   if (!mapObj) return;
@@ -1577,6 +2788,8 @@ function updateMapForCfg(cfg) {
   mapObj.layer.clearLayers();
   mapObj.caveLayer.clearLayers();
   mapObj.poiLayer?.clearLayers();
+  mapObj.supplyLayer?.clearLayers();
+  mapObj.playerStartLayer?.clearLayers();
   // Swap background image + its bounds
   mapObj.overlay.setUrl(cfg.image);
   mapObj.overlay.setBounds(bounds);
@@ -1589,7 +2802,7 @@ function updateMapForCfg(cfg) {
 }
 
 // ============================================================
-// Background toggle (Leaflet button) — replaces BG dropdown
+// Background toggle (Leaflet button) -- replaces BG dropdown
 // ============================================================
 
 let bgToggleControl = null;
@@ -1645,31 +2858,38 @@ function setupMainSelect(cfg) {
   };
 
   if (currentViewMode === "dino") {
-    const keys = Object.keys(cfg.dinos || {}).sort((a, b) => a.localeCompare(b));
+  // Build displayName -> [bp] index
+    const { nameToBps, names } = buildNameIndex(cfg.dinos || {});
+    currentNameToBps = nameToBps;
+    currentNames = names;
 
-    if (!keys.length) {
+    if (!names.length) {
       addPlaceholder("(No dinos)");
       renderInfoPanelBodyEmpty();
-      // ✅ IMPORTANT: still rebuild fancy UI
       mountFancyDinoSelect(cfg);
       return;
     }
 
-    for (const k of keys) {
+    // populate dropdown with UNIQUE display names
+    for (const name of names) {
       const opt = document.createElement("option");
-      opt.value = k;
-      opt.textContent = k;
+      opt.value = name;
+      opt.textContent = name;
       sel.appendChild(opt);
     }
 
+    // when user selects a name
     sel.onchange = () => {
-      lastSelection.dino[activeSourceId] = sel.value; // ✅ remember per source
-      drawDino(cfg, sel.value);
-      renderInfoPanelForDino(cfg, sel.value);
+      const displayName = sel.value;
+      lastSelection.dino[activeSourceId] = displayName; // ✅ remember per source
+
+      const bps = nameToBps.get(displayName) || [];
+      const grouped = buildGroupedSelection(cfg, bps);
+      drawGroupedDino(grouped, displayName);
     };
 
     const preferred = lastSelection.dino[activeSourceId];
-    sel.value = (preferred && keys.includes(preferred)) ? preferred : keys[0];
+    sel.value = (preferred && names.includes(preferred)) ? preferred : names[0];
     sel.onchange();
 
   } else {
@@ -1732,13 +2952,7 @@ function switchMode(nextMode) {
   const sel = document.getElementById("dinoSelect");
   if (!sel?.value || !currentCfg) return;
 
-  if (currentViewMode === "dino") {
-    drawDino(currentCfg, sel.value);
-    renderInfoPanelForDino(currentCfg, sel.value);
-  } else {
-    drawSpawnEntry(currentCfg, sel.value);
-    renderInfoPanelForEntry(currentCfg, sel.value);
-  }
+  requestRedraw();
   if (currentViewMode === "entry") {
     useRarityForMods = false;
   }
@@ -1756,13 +2970,20 @@ function setupSourceDropdown() {
   for (const s of SOURCES) {
     const opt = document.createElement("option");
     opt.value = s.id;
-    opt.textContent = s.name;
+    opt.textContent = s.name + (s.hasFile === false ? " (missing)" : "");
+    if (s.hasFile === false) opt.disabled = true;
     sel.appendChild(opt);
+  }
+
+  // if current selection became invalid, force back to official
+  if (SOURCES.find(s => s.id === activeSourceId)?.hasFile === false) {
+    activeSourceId = "official";
   }
   sel.value = activeSourceId;
 
   sel.addEventListener("change", async () => {
     activeSourceId = sel.value;
+
     setModStylePanelVisible(activeSourceId !== "official");
     renderModStylePanelBody();
 
@@ -1770,25 +2991,35 @@ function setupSourceDropdown() {
     const mapMeta = pickById(MAPS, mapSel?.value);
     await loadMapByMeta(mapMeta);
   });
-  const tree = buildSourceDrillTree();
 
   mountDrillSelect({
     nativeId: "sourceSelect",
     hostId: "sourceSelectFancy",
     placeholder: "Search this level...",
-    root: tree,
+    root: buildSourceDrillTree(),
     getButtonSubText: (v) => (v === "official" ? "Official" : "Mod"),
   });
 }
 
 async function loadModSource(sourceId) {
   const src = SOURCES.find(s => s.id === sourceId);
-  if (!src || !src.file) return null;
+  if (!src?.file) return null;
 
-  if (!loadedMods[sourceId]) {
-    loadedMods[sourceId] = await loadJSON(src.file);
+  // cache hit (including cached null)
+  if (Object.prototype.hasOwnProperty.call(loadedMods, sourceId)) {
+    return loadedMods[sourceId];
   }
-  return loadedMods[sourceId];
+
+  try {
+    const data = await loadJSON(src.file);
+    loadedMods[sourceId] = data;
+    return data;
+  } catch (err) {
+    console.warn("Mod source failed to load:", sourceId, src.file, err);
+    loadedMods[sourceId] = null;   // cache failure
+    src.hasFile = false;           // keep state consistent
+    return null;
+  }
 }
 
 // ============================================================
@@ -1861,6 +3092,27 @@ async function loadMapByMeta(mapMeta) {
   } else {
     updateMapForCfg(currentCfg);
   }
+  // Load supply crate points only for Astraeos (adjust if you want it for other maps too)
+  if (mapMeta.id === "Astraeos") {
+    try {
+      supplyCrateData = await loadJSON("data/astraeos_supply_poi_compact.json");
+    } catch (e) {
+      console.warn("No supply crate summary JSON found:", e);
+      supplyCrateSummary = null;
+    }
+
+    // ✅ Player starts (pixel points file)
+    try {
+      playerStartsData = await loadJSON("data/astraeos_player_starts.json");
+    } catch (e) {
+      console.warn("No player starts JSON found:", e);
+      playerStartsData = null;
+    }
+
+  } else {
+    supplyCrateData = null;
+    playerStartsData = null; // ✅
+  }
   
   // keep latest for dock rendering
   dockState.mapMeta = mapMeta;
@@ -1879,6 +3131,8 @@ async function loadMapByMeta(mapMeta) {
   
   setPoisVisible(showPois); // ✅ re-apply on map changes
   drawPois(currentCfg);
+  drawSupplyCrates();
+  drawPlayerStarts();
 
   // If Astraeos has alternate bgs, keep your dropdown behavior:
 
@@ -1961,7 +3215,7 @@ function drawSpawnEntry(cfg, entryClass) {
       const y1 = box.y, x1 = box.x, y2 = box.y + box.h, x2 = box.x + box.w;
       L.rectangle([[y1, x1], [y2, x2]], {
         color, weight, opacity,
-        dashArray: (isOfficial && untame) ? "3 3" : null,
+        dashArray: (untame) ? "3 3" : null,
         fillColor: color,
         fillOpacity
       }).addTo(targetLayer);
@@ -2022,7 +3276,7 @@ function drawDino(cfg, dinoKey) {
             const y1 = box.y, x1 = box.x, y2 = box.y + box.h, x2 = box.x + box.w;
             L.rectangle([[y1, x1], [y2, x2]], {
               color, weight, opacity,
-              dashArray: (isOfficial && m.untame) ? "3 3" : null,
+              dashArray: (m.untame) ? "3 3" : null,
               fillColor: color,
               fillOpacity
             }).addTo(targetLayer);
@@ -2066,7 +3320,7 @@ function drawDino(cfg, dinoKey) {
         const y1 = box.y, x1 = box.x, y2 = box.y + box.h, x2 = box.x + box.w;
         L.rectangle([[y1, x1], [y2, x2]], {
           color, weight, opacity,
-          dashArray: (isOfficial && untame) ? "3 3" : null,
+          dashArray: (untame) ? "3 3" : null,
           fillColor: color,
           fillOpacity
         }).addTo(targetLayer);
@@ -2114,6 +3368,63 @@ function ensureModStyleFab(){
   return btn;
 }
 
+// Fit .fp-title text into its available width by shrinking font-size only if needed.
+function fitTitleToSpace(titleEl, opts = {}) {
+  if (!titleEl) return;
+
+  const {
+    minPx = 10,
+    maxPx = 20,   // your "nice" size
+    stepPx = 0.25 // precision; can be 0.5 for even less work
+  } = opts;
+
+  // Reset to max first (so "Achatina" stays big)
+  titleEl.style.fontSize = maxPx + "px";
+
+  // If it already fits, we're done.
+  // (scrollWidth includes the full text width; clientWidth is available space)
+  if (titleEl.scrollWidth <= titleEl.clientWidth) return;
+
+  // Binary search between minPx and maxPx
+  let lo = minPx;
+  let hi = maxPx;
+
+  // guard: avoid infinite loops with tiny step sizes
+  for (let i = 0; i < 16; i++) {
+    const mid = Math.floor(((lo + hi) / 2) / stepPx) * stepPx;
+    titleEl.style.fontSize = mid + "px";
+
+    const fits = titleEl.scrollWidth <= titleEl.clientWidth;
+    if (fits) lo = mid; else hi = mid - stepPx;
+
+    if (hi < lo) break;
+  }
+
+  // lo is the largest size that fit (best-looking)
+  titleEl.style.fontSize = Math.max(minPx, lo) + "px";
+}
+
+function installPanelTitleFitter(panelEl, opts) {
+  const titleEl = panelEl?.querySelector(".fp-title");
+  const titlesWrap = panelEl?.querySelector(".fp-titles") || titleEl?.parentElement;
+
+  if (!panelEl || !titleEl) return;
+
+  // Run once after paint (ensures widths are real)
+  requestAnimationFrame(() => fitTitleToSpace(titleEl, opts));
+
+  // Refit on resize of the title container (or panel)
+  const ro = new ResizeObserver(() => fitTitleToSpace(titleEl, opts));
+  ro.observe(titlesWrap || panelEl);
+
+  // Refit when the title text changes
+  const mo = new MutationObserver(() => fitTitleToSpace(titleEl, opts));
+  mo.observe(titleEl, { childList: true, characterData: true, subtree: true });
+
+  // Optional: expose cleanup so you can destroy panels cleanly
+  panelEl._titleFitCleanup = () => { ro.disconnect(); mo.disconnect(); };
+}
+
 // ============================================================
 // FLOATING PANELS (Dino Info + Mod Style)
 // ============================================================
@@ -2132,7 +3443,7 @@ function createFloatingPanel({ id, title, defaultPos = { right: 12, top: 12 }, c
   panel.className = "floating-panel";
 
   panel.innerHTML = `
-    <div class="fp-header" data-drag-handle>
+    <div class="fp-header">
       <div class="fp-title">${title}</div>
       <div class="fp-actions"></div>
     </div>
@@ -2186,7 +3497,7 @@ function createFloatingPanel({ id, title, defaultPos = { right: 12, top: 12 }, c
     updateDockToggles();
     panel.dataset.hidden = "1";
 
-    // If it's the mod panel, show the floating “paintbrush” button
+    // If it's the mod panel, show the floating "paintbrush" button
     if (panel.id === "modStylePanel") {
       const fab = ensureModStyleFab();
       if (fab) fab.style.display = "none";
@@ -2280,23 +3591,24 @@ function requestRedraw() {
   });
 }
 
-
 function ensurePanels() {
+  if (!mapObj?.map) return;
+
   if (!stylePanel) {
-    stylePanel = createFloatingPanel({
+    stylePanel = ensureLeafletPanel({
       id: "modStylePanel",
-      title: "Mod Style",
-      defaultPos: { right: 6, top: 2 },
+      title: "Style",
+      position: "topright",
       collapsedByDefault: true
     });
     renderModStylePanelBody();
   }
 
   if (!infoPanel) {
-    infoPanel = createFloatingPanel({
+    infoPanel = ensureLeafletPanel({
       id: "dinoInfoPanel",
       title: "Dino Info",
-      defaultPos: { left: 6, top: 2 },
+      position: "topleft",
       collapsedByDefault: true
     });
     renderInfoPanelBodyEmpty();
@@ -2304,6 +3616,7 @@ function ensurePanels() {
 
   setModStylePanelVisible(activeSourceId !== "official");
 }
+
 
 function setModStylePanelVisible(show) {
   const el = document.getElementById("modStylePanel");
@@ -2438,12 +3751,16 @@ function renderInfoPanelForEntry(cfg, entryClass) {
   body.innerHTML = `
     <div class="info-section">
       <div class="info-title">${escapeHtml(entryClass)}</div>
+        <div class="dino-quick">
+            <div class="dino-badges" data-dino-badges></div>
+            
+            
+      </div>
 
       <div class="info-row">
         <span class="info-label">Entry class</span>
-        <button class="info-copy" data-copy="${escapeAttr(entryClass)}"aria-label="Copy"></button>
       </div>
-      <div class="info-mono">${escapeHtml(entryClass)}</div>
+      <div class="info-mono copy-on-click" data-copy="${escapeAttr(entryClass)}">${escapeHtml(entryClass)}</div>
     </div>
 
     <div class="info-section">
@@ -2455,9 +3772,7 @@ function renderInfoPanelForEntry(cfg, entryClass) {
   `;
 
   // hook copy buttons
-  body.querySelectorAll(".info-copy").forEach(btn => {
-    btn.onclick = () => copyText(btn.dataset.copy || "");
-  });
+  
 }
 
 function renderEntryDinoBlock(cfg, dinoKey, rowsForThisDino) {
@@ -2472,7 +3787,7 @@ function renderEntryDinoBlock(cfg, dinoKey, rowsForThisDino) {
     const metaLines = buildEntryMetaLines(e);
 
     return `
-      <div class="entry-meta" style="margin-top:4px;">
+      <div class="entry-meta">
         ${metaLines.map(line => {
           const isChances = String(line).toLowerCase().startsWith("spawn chances");
           const cls = isChances
@@ -2485,84 +3800,81 @@ function renderEntryDinoBlock(cfg, dinoKey, rowsForThisDino) {
   }).join("");
 
   return `
-    <div class="info-section" style="padding-bottom:8px;">
+    <div class="info-section">
       <div class="info-row">
         <span class="info-label">${escapeHtml(displayName)}</span>
-        <button class="info-copy" data-copy="${escapeAttr(bp || nameTag || displayName)}"aria-label="Copy"></button>
       </div>
-      ${bp ? `<div class="info-mono">${escapeHtml(bp)}</div>` : ``}
-      ${nameTag ? `<div class="info-mono" style="margin-top:4px;">${escapeHtml(nameTag)}</div>` : ``}
+      ${bp ? `<div class="info-mono copy-on-click" data-copy="${escapeAttr(bp)}">${escapeHtml(bp)}</div>` : ``}
+      ${nameTag ? `<div class="info-mono copy-on-click" data-copy="${escapeAttr(nameTag)}">${escapeHtml(nameTag)}</div>` : ``}
       ${entryLinesHtml}
     </div>
   `;
 }
 
+function renderDinoHero({ displayName, sexLine = "", allBps, nameTag, d }) {
+  const modLine = currentModMeta?.id
+    ? `<div class="info-submeta">Mod ID: ${escapeHtml(currentModMeta.id)}</div>`
+    : ``;
 
-function renderInfoPanelForDino(cfg, dinoKey) {
-  const panel = document.getElementById("dinoInfoPanel");
-  if (!panel) return;
-  const body = panel.querySelector(".fp-body");
-
-  const d = cfg?.dinos?.[dinoKey];
-  if (!d) {
-    renderInfoPanelBodyEmpty();
-    return;
-  }
-
-  const displayName = d.displayName || dinoKey;
-  setInfoPanelTitle(displayName);
-  const bp = d.bpPath || "";
-  const nameTag = d.nameTag || d.nametag || "";
-  const extraBps = asArray(d.additionalBpPathsToDisplay);
-  const allBps = [bp, ...extraBps].filter(Boolean);
-  const modId = currentModMeta?.id || "";
-  
-  const entries = d.entries || [];
-  
-  const blueprintBlock = `
-    <div class="info-row">
-      <span class="info-label">Blueprint</span>
-      ${allBps[0]
-        ? `<button class="info-copy" data-copy="${escapeAttr(allBps[0])}" aria-label="Copy"></button>`
-        : ""}
-    </div>
-  
-    ${(allBps.length ? allBps : ["(none)"]).map((p, i) => `
-        
-          ${i > 0
-            ? `
-            <div class="info-row">
-              <span class="info-label"></span>
-              <button class="info-copy" data-copy="${escapeAttr(p)}" aria-label="Copy" style="margin-left:6px;"></button>
-            </div>
-            `
-            : ""}
-
-        <div class="info-mono">
-          ${escapeHtml(p)}
-        </div>
-      `).join("")
-    }
+  const bpBlock = `
+    <div class="info-subtitle">Blueprint</div>
+    ${(allBps.length ? allBps : ["(none)"]).map((p) => `
+      <div class="info-mono copy-on-click" data-copy="${escapeAttr(p)}">${escapeHtml(p)}</div>
+    `).join("")}
   `;
-  
-  body.innerHTML = `
-    <div class="info-section">
-      <div class="info-title">${escapeHtml(displayName)}</div>
-      ${currentModMeta?.id ? `
-        <div class="info-submeta">
-          Mod ID: ${escapeHtml(currentModMeta.id)}
-        </div>
-      ` : ``}
-      
-      ${blueprintBlock}
-      
-      <div class="info-row">
-        <span class="info-label">Nametag</span>
-        <button class="info-copy" data-copy="${escapeAttr(nameTag)}"aria-label="Copy"></button>
-      </div>
-      <div class="info-mono">${escapeHtml(nameTag || "(none)")}</div>
-    </div>
 
+  const tagBlock = `
+    <div class="info-subtitle">Nametag</div>
+    <div class="info-mono copy-on-click" data-copy="${escapeAttr(nameTag)}">
+      ${escapeHtml(nameTag || "(none)")}
+    </div>
+  `;
+
+  return `
+    <div class="dino-hero">
+      <div class="dino-hero-title">${escapeHtml(displayName)}</div>
+      ${sexLine || ""}   <!-- ✅ now it actually shows -->
+      ${modLine}
+
+      <div class="dino-quick">
+        <div class="dino-badges" data-dino-badges></div>
+        
+        
+      </div>
+
+      ${bpBlock}
+      ${tagBlock}
+    </div>
+  `;
+}
+
+// INFO tab becomes "extra info" now, since identity moved into hero
+function renderDinoTab_Info({ d }) {
+  // Put anything you want that is NOT identity:
+  // traits, flavor text, toggles, etc.
+  const tame = (d?.tameable == null) ? null : (!!d.tameable);
+  const breed = (d?.breedable == null) ? null : (!!d.breedable);
+
+  return `
+    <div class="info-section">
+      <div class="info-subtitle">Details</div>
+      <div class="entry-meta">
+        ${tame === null ? `` : `<div class="entry-meta-line">Tameable: ${tame ? "Yes" : "No"}</div>`}
+        ${breed === null ? `` : `<div class="entry-meta-line">Breedable: ${breed ? "Yes" : "No"}</div>`}
+      </div>
+      
+
+      <div style="color:var(--muted);">
+        (Add whatever "Info" content you want here now.)
+      </div>
+    </div>
+  `;
+}
+
+
+
+function renderDinoTab_Spawns({ entries, dinoKey }) {
+  return `
     <div class="info-section">
       <div class="info-subtitle">Spawn entries (${entries.length})</div>
       <div class="entries">
@@ -2570,16 +3882,138 @@ function renderInfoPanelForDino(cfg, dinoKey) {
       </div>
     </div>
   `;
+}
 
-  body.querySelectorAll(".info-copy").forEach(btn => {
-    btn.onclick = () => copyText(btn.dataset.copy || "");
+function renderDinoTab_Stats(d) {
+  const drag = fmtNum(d?.dragWeight, 0);
+  const xp   = fmtNum(d?.killXpBase, 0);
+
+  // your exported stats object
+  const statsHtml = renderStatsTable(d?.stats);
+
+  return `
+    <div class="info-section">
+      <div class="info-subtitle">Stats</div>
+
+      <div class="entry-meta">
+        ${drag !== null ? `<div class="entry-meta-line">Drag Weight: ${escapeHtml(drag)}</div>` : ``}
+        ${xp   !== null ? `<div class="entry-meta-line">Kill XP: ${escapeHtml(String(Number(xp)*4))}</div>` : ``}
+      </div>
+
+      ${statsHtml}
+    </div>
+  `;
+}
+
+function renderDinoTab_Loot() {
+  return `
+    <div class="info-section">
+      <div class="info-subtitle">Loot</div>
+      <div style="color:var(--muted)">Loot tab (coming soon)</div>
+    </div>
+  `;
+}
+
+function renderInfoPanelForDino(cfg, dinoKey) {
+  const panel = document.getElementById("dinoInfoPanel");
+  if (!panel) return;
+
+  const body = panel.querySelector(".fp-body");
+  const d = cfg?.dinos?.[dinoKey];
+
+  if (!d) {
+    renderInfoPanelBodyEmpty();
+    return;
+  }
+
+  const pickedLabel = document.getElementById("dinoSelect")?.value || "";
+  const f = cleanName(d.fName);
+  const m = cleanName(d.mName);
+
+  const displayName = (f || m)
+    ? [f, m].filter(Boolean).join(" / ")
+    : (d.displayName || dinoKey);
+
+  // keep panel title matching the selected dropdown label (feels best)
+  setInfoPanelTitle(pickedLabel || displayName);
+
+  const bp = d.bpPath || "";
+  const nameTag = d.nameTag || d.nametag || "";
+  const extraBps = asArray(d.additionalBpPathsToDisplay);
+  const allBps = [bp, ...extraBps].filter(Boolean);
+
+  const entries = d.entries || [];
+  const other = otherSexNameForSelected(d, pickedLabel);
+
+  const sexLine = other
+    ? `<div class="info-submeta">Also: ${escapeHtml(other)}</div>`
+    : ``;
+
+  if (!INFO_TABS.some(t => t.id === infoTab)) infoTab = "info";
+
+  body.innerHTML = `
+    ${renderDinoHero({ sexLine, displayName, allBps, nameTag, d })}
+
+    <div class="fp-tabs">
+      ${INFO_TABS.map(t => `
+        <button type="button"
+                class="fp-tab ${infoTab===t.id ? "is-on" : ""}"
+                data-tab="${t.id}">
+          ${escapeHtml(t.label)}
+        </button>
+      `).join("")}
+    </div>
+
+    <div class="fp-pages" id="infoPages">
+      <div class="fp-track">
+
+        <div class="fp-page" data-page="spawns">
+          ${renderDinoTab_Spawns({ entries, dinoKey })}
+        </div> 
+
+        <div class="fp-page" data-page="stats">
+          ${renderDinoTab_Stats(d)}
+        </div>
+
+        <div class="fp-page" data-page="loot">
+          ${renderDinoTab_Loot()}
+        </div>
+        
+        <div class="fp-page" data-page="info">
+          ${renderDinoTab_Info({ d })}
+        </div>
+      </div>
+    </div>
+
+    <div class="fp-dots" aria-label="Pages">
+      ${INFO_TABS.map(t => `
+        <div class="fp-dot ${infoTab===t.id ? "is-on" : ""}" data-dot="${t.id}"></div>
+      `).join("")}
+    </div>
+  `;
+
+  // ✅ set correct slide position immediately
+  setInfoTab(infoTab);
+
+  // ✅ swipe mount (still targets #infoPages)
+  mountInfoSwipe(body.querySelector("#infoPages"));
+
+  // ✅ tab clicks
+  body.querySelectorAll(".fp-tab").forEach(btn => {
+    btn.onclick = () => setInfoTab(btn.dataset.tab);
   });
 
+  // ✅ populate quick info inside the hero (not inside the Info page anymore)
+  const badgesEl = body.querySelector(".dino-hero [data-dino-badges]");
+  const statsEl  = body.querySelector(".dino-hero [data-dino-stats]");
+  renderDinoQuickInfo(d, badgesEl, statsEl);
+
+  // ✅ entry toggle wiring (Spawns tab)
   body.querySelectorAll('input[data-entry-toggle="1"]').forEach(chk => {
     chk.onchange = () => {
       const key = chk.dataset.key;
       entryVisibility[key] = chk.checked;
-      redrawSelected();
+      requestAnimationFrame(redrawMapOnly);
     };
   });
 }
@@ -2618,43 +4052,42 @@ function renderEntryRow(entry, dinoKey, idx) {
 // ============================================================
 // BOOT
 // ============================================================
-function boot() {
+async function boot() {
+  // ✅ build sources FIRST
+  SOURCES = await buildSources();
+
   setupSourceDropdown();
   setupMapDropdown();
 
-  // kick off preloading (don’t await — it runs in background)
-  preloadMapAssets();
+  // kick off preloading
+  
 
   document.getElementById("controlsToggle")?.addEventListener("click", () => {
     document.getElementById("topbar")?.classList.toggle("show-controls");
-  
-    // let the DOM apply the new layout, then refit
-    requestAnimationFrame(() => {
-      refitMapForUI();
-    });
+    requestAnimationFrame(() => refitMapForUI());
   });
+
   document.getElementById("modeToggle")?.addEventListener("click", () => {
     const next = (currentViewMode === "dino") ? "entry" : "dino";
     switchMode(next);
   });
 
   syncModeBtn();
-  window.addEventListener("resize", () => {
-    refitMapForUI();
-  });
+
+  window.addEventListener("resize", () => refitMapForUI());
+
   loadMapByMeta(MAPS[0]).catch(err => {
     console.error(err);
     alert(err.message || String(err));
   });
-  document.addEventListener("pointerdown", (e) => {
-    const pop = document.getElementById("rarityLegendPop");
-    if (!pop || !showRarityLegend) return;
-  });
+
   document.querySelectorAll('#rarityLegend [data-r]').forEach(el=>{
     el.style.background = rarityToColor(el.dataset.r);
   });
 }
-window.addEventListener("load", () => {
-  setTimeout(() => mapObj?.map?.invalidateSize(), 100);
+
+// ✅ call it without breaking top-level
+boot().catch(err => {
+  console.error("BOOT FAILED:", err);
+  alert(err.message || String(err));
 });
-boot();

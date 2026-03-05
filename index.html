@@ -1,10 +1,11 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8">
+  <meta charset="utf-8"> 
 
   <!-- 🏷️ What shows in the browser tab -->
   <title>ASA Spawn Maps</title>
+  <link rel="icon" href="favicon.ico">
 
   <!-- 📱 Makes the page scale correctly on phones (without this, mobile looks weird/zoomed) -->
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -13,7 +14,6 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <!-- 🧠 Leaflet JS: the actual map engine -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
   <!-- 🎨 Your CSS file (all the styling we keep tweaking) -->
   <link rel="stylesheet" href="style.css">
 </head>
@@ -61,6 +61,7 @@
       <span class="rl-end rl-right">very rare</span>
     </div>
   </div>
+  <div id="buildInfo">v1.28</div>
 
   <!-- 🧠 Your main JS -->
   <script src="app.js"></script>
