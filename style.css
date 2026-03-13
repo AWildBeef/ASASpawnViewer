@@ -1023,7 +1023,12 @@ body{
 }
 
 #mapEntriesPanel .entry-meta-line{
-  font-size:8px;
+  font-size:11px;
+  text-wrap-mode:wrap;
+}
+
+#mapEntriesPanel .dd-item-name{
+  font-size:13px;
   text-wrap-mode:wrap;
 }
 
@@ -1469,6 +1474,16 @@ body{
   
   #dinoInfoPanel .fp-tab{
     font-size: 10px;
+  }
+  
+  #mapEntriesPanel .entry-meta-line{
+    font-size:8px;
+    text-wrap-mode:wrap;
+  }
+  
+  #mapEntriesPanel .dd-item-name{
+    font-size:12px;
+    text-wrap-mode:wrap;
   }
   
 }
