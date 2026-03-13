@@ -3999,11 +3999,20 @@ function rebuildDinoSelect(){
 
   UI.dinoSelect.innerHTML = "";
 
-  // blank / none option
   const emptyOpt = document.createElement("option");
   emptyOpt.value = "";
   emptyOpt.textContent = placeholder;
   UI.dinoSelect.appendChild(emptyOpt);
+
+  const hadSelection = !!State.selection;
+  const keepMissingSelection = hadSelection && !list.includes(State.selection);
+
+  if (keepMissingSelection) {
+    const missingOpt = document.createElement("option");
+    missingOpt.value = State.selection;
+    missingOpt.textContent = `${State.selection} (not on this map)`;
+    UI.dinoSelect.appendChild(missingOpt);
+  }
 
   for (const v of list){
     const o = document.createElement("option");
@@ -4012,8 +4021,7 @@ function rebuildDinoSelect(){
     UI.dinoSelect.appendChild(o);
   }
 
-  // preserve selection if possible, otherwise blank
-  if (!list.includes(State.selection)) {
+  if (!hadSelection) {
     State.selection = "";
   }
 
