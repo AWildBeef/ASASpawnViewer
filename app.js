@@ -51,7 +51,27 @@ async function buildSources(){
     file: `data/mods/${m.id}.json`,
     group: m.group || "",
     order: Number.isFinite(m.order) ? m.order : 9999,
-    groupOrder: Number.isFinite(m.groupOrder) ? m.groupOrder : 9999
+    groupOrder: Number.isFinite(m.groupOrder) ? m.groupOrder : 9999,
+    kind: "mod"
+  }));
+
+  const groupMap = new Map();
+
+  for (const m of mods){
+    if (!m.group) continue;
+    if (!groupMap.has(m.group)) groupMap.set(m.group, []);
+    groupMap.get(m.group).push(m);
+  }
+
+  const groupSources = [...groupMap.entries()].map(([group, members]) => ({
+    id: `group:${group}`,
+    name: `All ${group}`,
+    label: `All ${group}`,
+    group,
+    members: members.map(m => m.id),
+    kind: "group",
+    order: -1,
+    groupOrder: members[0]?.groupOrder ?? 9999
   }));
 
   mods.sort((a,b)=>
@@ -68,12 +88,13 @@ async function buildSources(){
       label:"Official",
       spawn: PATHS.spawnGlobal,
       dinos: PATHS.dinoGlobal,
-      order: 0
+      order: 0,
+      kind: "official"
     },
+    ...groupSources,
     ...mods
   ];
 }
-
 
 /* ============================================================
    GLOBAL DATA
@@ -92,6 +113,10 @@ const State = {
   mapId:MAPS[0].id,
   mode:"dino",
   selection:"",
+  selections: {
+    dino: "",
+    entry: ""
+  },
 
   mapEntries:new Set(),
   entryToDinos:new Map(),
@@ -125,6 +150,74 @@ const drawStyle = {
   color: "#00ff88",
   opacity: 0.8
 };
+
+const urlParams = new URLSearchParams(window.location.search);
+
+const EMBED_MODE = urlParams.get("embed") === "1" || window.self !== window.top;
+
+const EMBED_SOURCE = urlParams.get("source") || "";
+const EMBED_GROUP = urlParams.get("group") || "";
+const EMBED_MAP = urlParams.get("map") || "";
+const EMBED_MODE_LOCK = urlParams.get("mode") || "";
+
+const EMBED_ALLOW_OFFICIAL = urlParams.get("allowOfficial") === "1";
+const EMBED_HIDE_SOURCE = urlParams.get("hideSource") === "1";
+const EMBED_HIDE_MAP = urlParams.get("hideMap") === "1";
+const EMBED_HIDE_MODE = urlParams.get("hideMode") === "1";
+const EMBED_HIDE_TOPBAR = urlParams.get("hideTopbar") === "1";
+
+const viewOptions = {
+  includeOfficialInEntryPanels: false,
+  includeOfficialInItemPanels: false
+};
+
+if (EMBED_MODE) {
+  document.body.classList.add("embed-mode");
+}
+
+function filterSourcesForEmbed(allSources){
+
+  if(!EMBED_SOURCE && !EMBED_GROUP) return allSources;
+
+  // single-source lock
+  if(EMBED_SOURCE){
+    return allSources.filter(s => s.id === EMBED_SOURCE);
+  }
+
+  // group restriction
+  if(EMBED_GROUP){
+
+    const group = allSources.find(s =>
+      s.kind === "group" && s.id === EMBED_GROUP
+    );
+
+    if(!group) return [];
+
+    const allowedIds = new Set([
+      group.id,
+      ...(group.members || [])
+    ]);
+
+    return allSources.filter(s => allowedIds.has(s.id));
+  }
+
+  return allSources;
+}
+
+function selectionListForMode(mode){
+  return mode === "dino" ? State.names : State.entryList;
+}
+
+function syncSelectionForMode(mode){
+  const list = selectionListForMode(mode);
+  const saved = State.selections[mode] || "";
+
+  if (saved && list.includes(saved)) {
+    State.selection = saved;
+  } else {
+    State.selection = "";
+  }
+}
 
 /* ============================================================
    UI
@@ -299,6 +392,26 @@ function buildSourceDrillTree() {
   const loose = [];
 
   for (const s of modSources) {
+    if (s.kind === "group") {
+      const gname = String(s.group || "");
+
+      if (!groups.has(gname)) {
+        groups.set(gname, {
+          label: gname,
+          children: [],
+          _groupOrder: Number.isFinite(s.groupOrder) ? s.groupOrder : 9999
+        });
+      }
+
+      groups.get(gname).children.push({
+        label: s.name,
+        value: s.id,
+        _order: -1
+      });
+
+      continue;
+    }
+
     const leaf = {
       label: s.name,
       value: s.id,
@@ -321,7 +434,7 @@ function buildSourceDrillTree() {
       loose.push(leaf);
     }
   }
-
+  
   for (const g of groups.values()) {
     g.children.sort((a, b) =>
       (a._order - b._order) || a.label.localeCompare(b.label)
@@ -348,6 +461,71 @@ function buildSourceDrillTree() {
 
   return root;
 }
+
+async function buildMergedGroupSource(src){
+  const mods = [];
+
+  for (const modId of src.members || []){
+    const modSrc = SOURCES.find(s => s.id === modId);
+    if (!modSrc?.file) continue;
+    mods.push(await loadJSON(modSrc.file));
+  }
+
+  let mergedSpawn = {
+    mapLegend: { ...(Global.baseSpawn?.mapLegend || {}) },
+    entryMaps: {},
+    entries: {},
+    maps: { ...(Global.baseSpawn?.maps || {}) },
+    dinos: { ...(Global.baseSpawn?.dinos || {}) },
+    worldReplacements: {}
+  };
+
+  let mergedDinos = {
+    dinos: { ...(Global.baseDinos?.dinos || {}) }
+  };
+
+  for (const mod of mods){
+    mergedSpawn = {
+      mapLegend: {
+        ...(mergedSpawn.mapLegend || {}),
+        ...(mod.mapLegend || {})
+      },
+      entryMaps: {
+        ...(mergedSpawn.entryMaps || {}),
+        ...(mod.entryMaps || {})
+      },
+      entries: mergeEntryTables(
+        mergedSpawn.entries || {},
+        mod.entries || {}
+      ),
+      maps: {
+        ...(mergedSpawn.maps || {}),
+        ...(mod.maps || {})
+      },
+      dinos: {
+        ...(mergedSpawn.dinos || {}),
+        ...(mod.spawnDinos || {})
+      },
+      worldReplacements: mergeWorldReplacementTables(
+        mergedSpawn.worldReplacements || {},
+        mod.worldReplacements || {}
+      )
+    };
+
+    mergedDinos = {
+      dinos: {
+        ...(mergedDinos.dinos || {}),
+        ...(mod.dinos || {})
+      }
+    };
+  }
+
+  return {
+    spawn: mergedSpawn,
+    dinos: mergedDinos
+  };
+}
+
 function mountSourceDrillDropdown(native, host){
   native.style.display = "none";
   host.innerHTML = "";
@@ -3849,9 +4027,258 @@ function mountFancyDropdown(native,host,placeholder){
   sync();
 }
 
+function sourceById(id){
+  return SOURCES.find(s => s.id === id) || null;
+}
+
+function normalizeMapId(raw){
+  const s = String(raw || "").trim().toLowerCase();
+  const hit = MAPS.find(m => m.id.toLowerCase() === s);
+  return hit ? hit.id : "";
+}
+
+function allowedSourceIdsForEmbed(){
+  if (!EMBED_MODE) return null;
+
+  const allowed = new Set();
+
+  if (EMBED_SOURCE) {
+    const src = sourceById(EMBED_SOURCE);
+    if (src) {
+      allowed.add(src.id);
+
+      if (src.kind === "group") {
+        for (const mid of (src.members || [])) allowed.add(mid);
+      }
+    }
+  } else if (EMBED_GROUP) {
+    const groupName = EMBED_GROUP.trim().toLowerCase();
+
+    for (const s of SOURCES){
+      if (String(s.group || "").trim().toLowerCase() === groupName) {
+        allowed.add(s.id);
+      }
+    }
+
+    const groupSource = SOURCES.find(s =>
+      s.kind === "group" &&
+      String(s.group || "").trim().toLowerCase() === groupName
+    );
+
+    if (groupSource) allowed.add(groupSource.id);
+  } else {
+    return null;
+  }
+
+  if (EMBED_ALLOW_OFFICIAL) {
+    allowed.add("official");
+  }
+
+  return allowed;
+}
+
+function allowedMapsForEmbed(){
+  if (!EMBED_MODE || !EMBED_MAP) return null;
+
+  const allowed = new Set();
+
+  for (const raw of EMBED_MAP.split(",")) {
+    const mapId = normalizeMapId(raw);
+    if (mapId) allowed.add(mapId);
+  }
+
+  return allowed.size ? allowed : null;
+}
+
+function applyEmbedRestrictions(){
+  if (!EMBED_MODE) return;
+
+  if (EMBED_HIDE_TOPBAR && UI.topbar) {
+    UI.topbar.style.display = "none";
+  }
+
+  const allowedSources = allowedSourceIdsForEmbed();
+  if (allowedSources) {
+    [...UI.sourceSelect.options].forEach(opt => {
+      opt.hidden = !allowedSources.has(opt.value);
+    });
+
+    if (!allowedSources.has(UI.sourceSelect.value)) {
+      const firstAllowed = [...allowedSources][0];
+      if (firstAllowed) UI.sourceSelect.value = firstAllowed;
+    }
+
+    if (EMBED_SOURCE || EMBED_HIDE_SOURCE) {
+      UI.sourceSelect.disabled = true;
+      if (UI.sourceFancy) UI.sourceFancy.style.display = "none";
+      if (UI.sourceSelect.parentElement && !EMBED_HIDE_SOURCE) {
+        UI.sourceSelect.style.display = "";
+      }
+    }
+  }
+
+  const allowedMaps = allowedMapsForEmbed();
+  if (allowedMaps) {
+    [...UI.mapSelect.options].forEach(opt => {
+      opt.hidden = !allowedMaps.has(opt.value);
+    });
+
+    if (!allowedMaps.has(UI.mapSelect.value)) {
+      const firstAllowed = [...allowedMaps][0];
+      if (firstAllowed) {
+        UI.mapSelect.value = firstAllowed;
+        State.mapId = firstAllowed;
+      }
+    }
+
+    if (EMBED_MAP || EMBED_HIDE_MAP) {
+      UI.mapSelect.disabled = true;
+      if (UI.mapFancy) UI.mapFancy.style.display = "none";
+      if (UI.mapSelect.parentElement && !EMBED_HIDE_MAP) {
+        UI.mapSelect.style.display = "";
+      }
+    }
+  }
+
+  if (EMBED_MODE_LOCK) {
+    const validModes = new Set(["dino", "entry"]);
+    if (validModes.has(EMBED_MODE_LOCK)) {
+      State.mode = EMBED_MODE_LOCK;
+      syncModeButton();
+    }
+  }
+
+  if (EMBED_MODE_LOCK || EMBED_HIDE_MODE) {
+    if (UI.modeToggle) UI.modeToggle.disabled = true;
+    if (EMBED_HIDE_MODE && UI.modeToggle) UI.modeToggle.style.display = "none";
+  }
+}
+
 /* ============================================================
    UI SETUP
 ============================================================ */
+async function loadSelectedSource() {
+  const srcId = UI.sourceSelect.value;
+  const src = SOURCES.find(s => s.id === srcId);
+  if (!src) return;
+
+  if (src.kind === "official") {
+    Global.modMeta = null;
+    Global.spawn = Global.baseSpawn;
+    Global.dinos = Global.baseDinos;
+  }
+  else if (src.kind === "group") {
+    const memberSources = SOURCES.filter(s => (src.members || []).includes(s.id));
+
+    let mergedSpawn = {
+      mapLegend: { ...(Global.baseSpawn?.mapLegend || {}) },
+      entryMaps: {},
+      entries: {},
+      maps: { ...(Global.baseSpawn?.maps || {}) },
+      dinos: {},
+      worldReplacements: {}
+    };
+
+    let mergedDinos = {
+      dinos: {}
+    };
+
+    for (const member of memberSources) {
+      const mod = await loadJSON(member.file);
+
+      mergedSpawn = {
+        mapLegend: {
+          ...(mergedSpawn.mapLegend || {}),
+          ...(mod.mapLegend || {})
+        },
+        entryMaps: {
+          ...(mergedSpawn.entryMaps || {}),
+          ...(mod.entryMaps || {})
+        },
+        entries: mergeEntryTables(
+          mergedSpawn.entries || {},
+          mod.entries || {}
+        ),
+        maps: {
+          ...(mergedSpawn.maps || {}),
+          ...(mod.maps || {})
+        },
+        dinos: {
+          ...(mergedSpawn.dinos || {}),
+          ...(mod.spawnDinos || {})
+        },
+        worldReplacements: mergeWorldReplacementTables(
+          mergedSpawn.worldReplacements || {},
+          mod.worldReplacements || {}
+        )
+      };
+
+      mergedDinos = {
+        dinos: {
+          ...(mergedDinos.dinos || {}),
+          ...(mod.dinos || {})
+        }
+      };
+    }
+
+    Global.modMeta = {
+      modId: src.id,
+      modName: src.name,
+      isGroup: true,
+      members: src.members || [],
+      dinos: mergedDinos.dinos
+    };
+
+    Global.spawn = mergedSpawn;
+    Global.dinos = mergedDinos;
+  }
+  else {
+    const mod = await loadJSON(src.file);
+
+    Global.modMeta = mod;
+
+    Global.spawn = {
+      mapLegend: {
+        ...(Global.baseSpawn?.mapLegend || {}),
+        ...(mod.mapLegend || {})
+      },
+      entryMaps: {
+        ...(Global.baseSpawn?.entryMaps || {}),
+        ...(mod.entryMaps || {})
+      },
+      entries: mergeEntryTables(
+        Global.baseSpawn?.entries || {},
+        mod.entries || {}
+      ),
+      maps: {
+        ...(Global.baseSpawn?.maps || {}),
+        ...(mod.maps || {})
+      },
+      dinos: {
+        ...(Global.baseSpawn?.dinos || {}),
+        ...(mod.spawnDinos || {})
+      },
+      worldReplacements: mergeWorldReplacementTables(
+        Global.baseSpawn?.worldReplacements || {},
+        mod.worldReplacements || {}
+      )
+    };
+
+    Global.dinos = {
+      dinos: {
+        ...(Global.baseDinos?.dinos || {}),
+        ...(mod.dinos || {})
+      }
+    };
+  }
+
+  rebuildMapIndices();
+  rebuildDinoSelect();
+  applyEmbedRestrictions();
+  renderDock();
+  render();
+}
+
 
 function setupUI(){
 
@@ -3871,66 +4298,15 @@ function setupUI(){
 
   UI.sourceSelect.value = "official";
 
-  UI.sourceSelect.onchange = async ()=>{
-
-    const srcId = UI.sourceSelect.value;
-    const src = SOURCES.find(s => s.id === srcId);
-    if (!src) return;
-
-    if (src.id === "official") {
-      Global.modMeta = null;
-      Global.spawn = Global.baseSpawn;
-      Global.dinos = Global.baseDinos;
-    } else {
-      const mod = await loadJSON(src.file);
-
-      Global.modMeta = mod;
-
-      Global.spawn = {
-        mapLegend: {
-          ...(Global.baseSpawn?.mapLegend || {}),
-          ...(mod.mapLegend || {})
-        },
-        entryMaps: {
-          ...(Global.baseSpawn?.entryMaps || {}),
-          ...(mod.entryMaps || {})
-        },
-        entries: mergeEntryTables(
-          Global.baseSpawn?.entries || {},
-          mod.entries || {}
-        ),
-        maps: {
-          ...(Global.baseSpawn?.maps || {}),
-          ...(mod.maps || {})
-        },
-        dinos: {
-          ...(Global.baseSpawn?.dinos || {}),
-          ...(mod.spawnDinos || {})
-        },
-        worldReplacements: mergeWorldReplacementTables(
-          Global.baseSpawn?.worldReplacements || {},
-          mod.worldReplacements || {}
-        )
-      };
-
-      Global.dinos = {
-        dinos: {
-          ...(Global.baseDinos?.dinos || {}),
-          ...(mod.dinos || {})
-        }
-      };
-    }
-
-    rebuildMapIndices();
-    rebuildDinoSelect();
-    renderDock();
-    render();
+  UI.sourceSelect.onchange = async () => {
+    await loadSelectedSource();
   };
 
   mountSourceDrillDropdown(
     UI.sourceSelect,
     UI.sourceFancy
   );
+  applyEmbedRestrictions();
 
   UI.mapSelect.innerHTML="";
 
@@ -3957,9 +4333,18 @@ function setupUI(){
   rebuildDinoSelect();
 
   UI.modeToggle.onclick = () => {
+    // save current selection into the mode we're leaving
+    State.selections[State.mode] = State.selection || "";
+
+    // switch mode
     State.mode = State.mode === "dino" ? "entry" : "dino";
+
+    // restore remembered selection for new mode
+    syncSelectionForMode(State.mode);
+
     syncModeButton();
     rebuildDinoSelect();
+    applyEmbedRestrictions();
     render();
   };
 
@@ -3995,7 +4380,11 @@ function rebuildDinoSelect(){
   const list = State.mode === "dino" ? State.names : State.entryList;
   const placeholder = State.mode === "dino"
     ? "(Select a Dino)"
-    : "(Select a Spawn Entry)"
+    : "(Select a Spawn Entry)";
+
+  // restore valid remembered selection for current mode
+  const saved = State.selections[State.mode] || "";
+  State.selection = (saved && list.includes(saved)) ? saved : "";
 
   UI.dinoSelect.innerHTML = "";
 
@@ -4004,16 +4393,6 @@ function rebuildDinoSelect(){
   emptyOpt.textContent = placeholder;
   UI.dinoSelect.appendChild(emptyOpt);
 
-  const hadSelection = !!State.selection;
-  const keepMissingSelection = hadSelection && !list.includes(State.selection);
-
-  if (keepMissingSelection) {
-    const missingOpt = document.createElement("option");
-    missingOpt.value = State.selection;
-    missingOpt.textContent = `${State.selection} (not on this map)`;
-    UI.dinoSelect.appendChild(missingOpt);
-  }
-
   for (const v of list){
     const o = document.createElement("option");
     o.value = v;
@@ -4021,14 +4400,11 @@ function rebuildDinoSelect(){
     UI.dinoSelect.appendChild(o);
   }
 
-  if (!hadSelection) {
-    State.selection = "";
-  }
-
   UI.dinoSelect.value = State.selection;
 
   UI.dinoSelect.onchange = () => {
     State.selection = UI.dinoSelect.value || "";
+    State.selections[State.mode] = State.selection;
     render();
   };
 
@@ -4093,6 +4469,7 @@ async function onMapChanged(){
 
   rebuildMapIndices();
   rebuildDinoSelect();
+  applyEmbedRestrictions();
   renderDock();
   if (isPanelVisible("mapEntriesPanel")) {
     renderMapEntriesPanel();
@@ -4107,9 +4484,10 @@ async function onMapChanged(){
 
 async function boot(){
 
-  SOURCES = await buildSources();
+  const allSources = await buildSources();
+  SOURCES = filterSourcesForEmbed(allSources);
 
-  const official = SOURCES.find(s => s.id === "official");
+  const official = allSources.find(s => s.id === "official");
 
   Global.baseSpawn = await loadJSON(official.spawn);
   Global.baseDinos = await loadJSON(official.dinos);
@@ -4127,7 +4505,10 @@ async function boot(){
   setLegendOpen(false);
 
   setupUI();
-  
+  applyEmbedRestrictions();
+
+  await loadSelectedSource();
+
   initRarityLegend();
 
   await onMapChanged();
