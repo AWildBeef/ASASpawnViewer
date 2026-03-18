@@ -171,34 +171,64 @@ const viewOptions = {
   includeOfficialInItemPanels: false
 };
 
+function isBlueprintFromActiveMod(bp){
+  if (activeSourceIsOfficial()) return true;
+
+  const allowed = modBlueprintSet();
+  return allowed.has(bp);
+}
+
+
 if (EMBED_MODE) {
   document.body.classList.add("embed-mode");
 }
 
 function filterSourcesForEmbed(allSources){
+  if (!EMBED_MODE) return allSources;
+  if (!EMBED_SOURCE && !EMBED_GROUP) return allSources;
 
-  if(!EMBED_SOURCE && !EMBED_GROUP) return allSources;
+  if (EMBED_SOURCE){
+    const src = allSources.find(s => s.id === EMBED_SOURCE);
+    if (!src) return [];
 
-  // single-source lock
-  if(EMBED_SOURCE){
-    return allSources.filter(s => s.id === EMBED_SOURCE);
+    const allowed = new Set([src.id]);
+
+    if (src.kind === "group") {
+      for (const mid of (src.members || [])) allowed.add(mid);
+    }
+
+    if (EMBED_ALLOW_OFFICIAL) {
+      allowed.add("official");
+    }
+
+    return allSources.filter(s => allowed.has(s.id));
   }
 
-  // group restriction
-  if(EMBED_GROUP){
+  if (EMBED_GROUP){
+    const groupName = EMBED_GROUP.trim().toLowerCase();
 
-    const group = allSources.find(s =>
-      s.kind === "group" && s.id === EMBED_GROUP
+    const allowed = new Set();
+
+    for (const s of allSources){
+      if (String(s.group || "").trim().toLowerCase() === groupName) {
+        allowed.add(s.id);
+      }
+    }
+
+    const groupSource = allSources.find(s =>
+      s.kind === "group" &&
+      String(s.group || "").trim().toLowerCase() === groupName
     );
 
-    if(!group) return [];
+    if (groupSource) {
+      allowed.add(groupSource.id);
+    }
 
-    const allowedIds = new Set([
-      group.id,
-      ...(group.members || [])
-    ]);
+    if (EMBED_ALLOW_OFFICIAL) {
+      allowed.add("official");
+    }
 
-    return allSources.filter(s => allowedIds.has(s.id));
+    return allSources.filter(s => allowed.has(s.id));
   }
 
   return allSources;
@@ -473,16 +503,18 @@ async function buildMergedGroupSource(src){
 
   let mergedSpawn = {
     mapLegend: { ...(Global.baseSpawn?.mapLegend || {}) },
-    entryMaps: {},
-    entries: {},
+    entryMaps: { ...(Global.baseSpawn?.entryMaps || {}) },
+    entries: { ...(Global.baseSpawn?.entries || {}) },
     maps: { ...(Global.baseSpawn?.maps || {}) },
     dinos: { ...(Global.baseSpawn?.dinos || {}) },
-    worldReplacements: {}
+    worldReplacements: { ...(Global.baseSpawn?.worldReplacements || {}) }
   };
 
   let mergedDinos = {
     dinos: { ...(Global.baseDinos?.dinos || {}) }
   };
+
+  let modOnlyDinos = {};
 
   for (const mod of mods){
     mergedSpawn = {
@@ -518,11 +550,17 @@ async function buildMergedGroupSource(src){
         ...(mod.dinos || {})
       }
     };
+
+    modOnlyDinos = {
+      ...modOnlyDinos,
+      ...(mod.dinos || {})
+    };
   }
 
   return {
     spawn: mergedSpawn,
-    dinos: mergedDinos
+    dinos: mergedDinos,
+    modOnlyDinos
   };
 }
 
@@ -2611,7 +2649,15 @@ function renderEntryTabDinos(entryName){
     byDino.get(r.dinoKey).push(r);
   }
 
-  const dinoKeys = [...byDino.keys()].sort((a, b) => {
+  const rawDinoKeys = [...byDino.keys()];
+
+  const filteredDinoKeys = rawDinoKeys.filter(bp => {
+    if (activeSourceIsOfficial()) return true;
+    if (viewOptions.includeOfficialInEntryPanels) return true;
+    return isBlueprintFromActiveMod(bp);
+  });
+
+  const dinoKeys = filteredDinoKeys.sort((a, b) => {
     const da = getDinoObjByBp(a);
     const db = getDinoObjByBp(b);
     const an = da?.n || a;
@@ -2622,6 +2668,22 @@ function renderEntryTabDinos(entryName){
   return `
     <div class="info-section">
       <div class="info-subtitle">Dinos (${dinoKeys.length})</div>
+      
+      ${
+        activeSourceIsOfficial()
+          ? ""
+          : `
+            <label class="fp-row" style="margin-bottom:8px;">
+              <input
+                type="checkbox"
+                id="entryIncludeOfficialToggle"
+                ${viewOptions.includeOfficialInEntryPanels ? "checked" : ""}
+              >
+              <span>Show official dinos</span>
+            </label>
+          `
+      }
+
       <div class="entries">
         ${dinoKeys.map(dinoKey => renderEntryDinoBlock(dinoKey, getDinoObjByBp(dinoKey), byDino.get(dinoKey))).join("")}
       </div>
@@ -2685,6 +2747,13 @@ function renderEntryPanel(entryName){
       renderEntryPanel(entryName);
     }
   });
+  const officialToggle =  body.querySelector("#entryIncludeOfficialToggle");
+  if (officialToggle){
+    officialToggle.onchange = () => {
+      viewOptions.includeOfficialInEntryPanels = officialToggle.checked;
+      renderEntryPanel(entryName);
+    };
+  }
   mountPanelSwipe(
     body.querySelector(".fp-pages"),
     ENTRY_PANEL_TABS,
@@ -2970,7 +3039,6 @@ function supplyCrateTooltipHtml(p, legend){
     <div class="poi-tip-block">
       <div class="poi-tip-title">Supply Drops</div>
       ${crateLines}
-      ${sourceBlock}
     </div>
   `;
 }
@@ -4163,76 +4231,30 @@ async function loadSelectedSource() {
   if (!src) return;
 
   if (src.kind === "official") {
+
     Global.modMeta = null;
     Global.spawn = Global.baseSpawn;
     Global.dinos = Global.baseDinos;
+
   }
   else if (src.kind === "group") {
-    const memberSources = SOURCES.filter(s => (src.members || []).includes(s.id));
 
-    let mergedSpawn = {
-      mapLegend: { ...(Global.baseSpawn?.mapLegend || {}) },
-      entryMaps: {},
-      entries: {},
-      maps: { ...(Global.baseSpawn?.maps || {}) },
-      dinos: {},
-      worldReplacements: {}
-    };
-
-    let mergedDinos = {
-      dinos: {}
-    };
-
-    for (const member of memberSources) {
-      const mod = await loadJSON(member.file);
-
-      mergedSpawn = {
-        mapLegend: {
-          ...(mergedSpawn.mapLegend || {}),
-          ...(mod.mapLegend || {})
-        },
-        entryMaps: {
-          ...(mergedSpawn.entryMaps || {}),
-          ...(mod.entryMaps || {})
-        },
-        entries: mergeEntryTables(
-          mergedSpawn.entries || {},
-          mod.entries || {}
-        ),
-        maps: {
-          ...(mergedSpawn.maps || {}),
-          ...(mod.maps || {})
-        },
-        dinos: {
-          ...(mergedSpawn.dinos || {}),
-          ...(mod.spawnDinos || {})
-        },
-        worldReplacements: mergeWorldReplacementTables(
-          mergedSpawn.worldReplacements || {},
-          mod.worldReplacements || {}
-        )
-      };
-
-      mergedDinos = {
-        dinos: {
-          ...(mergedDinos.dinos || {}),
-          ...(mod.dinos || {})
-        }
-      };
-    }
+    const merged = await buildMergedGroupSource(src);
 
     Global.modMeta = {
       modId: src.id,
       modName: src.name,
       isGroup: true,
       members: src.members || [],
-      dinos: mergedDinos.dinos
+      dinos: merged.modOnlyDinos || {}
     };
 
-    Global.spawn = mergedSpawn;
-    Global.dinos = mergedDinos;
+    Global.spawn = merged.spawn;
+    Global.dinos = merged.dinos;
+
   }
   else {
+
     const mod = await loadJSON(src.file);
 
     Global.modMeta = mod;
@@ -4270,6 +4292,7 @@ async function loadSelectedSource() {
         ...(mod.dinos || {})
       }
     };
+
   }
 
   rebuildMapIndices();
@@ -4296,7 +4319,7 @@ function setupUI(){
     UI.sourceSelect.appendChild(o);
   }
 
-  UI.sourceSelect.value = "official";
+  UI.sourceSelect.value = UI.sourceSelect.options[0]?.value || "";
 
   UI.sourceSelect.onchange = async () => {
     await loadSelectedSource();
