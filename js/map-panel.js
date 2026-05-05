@@ -2119,7 +2119,8 @@ function buildResolvedSupplyLegend(geom){
       : null;
 
     const isArtifact = cls.toLowerCase().includes("artifactcrate");
-    const isSupply = cls.toLowerCase().includes("supplycrate");
+    // "supplycreate" (with an 'a') is a typo present in some map geometry files
+    const isSupply = cls.toLowerCase().includes("supplycrate") || cls.toLowerCase().includes("supplycreate");
 
     out.push({
       bp,
