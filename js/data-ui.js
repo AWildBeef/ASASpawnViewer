@@ -810,10 +810,11 @@ function finalRarityForManager(entryName,meta,score){
 
 
 function selectionListForMode(mode) {
-  if (mode === "dino") return State.names;
+  if (mode === "dino")  return State.names;
   if (mode === "entry") return State.entryList;
   if (mode === "crate") return State.crateNames;
-  if (mode === "item") return State.itemNames;
+  if (mode === "item")  return State.itemNames;
+  if (mode === "note")  return []; // note view uses its own panel
   return [];
 }
 
@@ -1514,6 +1515,9 @@ function rebuildLootIndices(){
 
   const modActive = !activeSourceIsOfficial();
 
+  // typeFilter is declared once and used for both the crate loop and mission loop
+  const typeFilter = infoPanelState.crateTypeFilter || "all";
+
   // --- normal crates on this map ---
   for (const crateClass of mapCrateClasses){
     const crateId = crateClassToId(crateClass);
@@ -1527,6 +1531,30 @@ function rebuildLootIndices(){
       const crateMeta = loot.c?.[crateClass];
       const hasModSet = Array.isArray(crateMeta?.s) && crateMeta.s.some(s => s._mod);
       if (!hasModSet) continue;
+    }
+
+    // Apply crate type filter
+    if (typeFilter !== "all") {
+      const isArtifact  = crateClass.toLowerCase().includes("artifact");
+      const isCave      = isCaveCrate(crateClass);
+      const isOcean     = isOceanCrate(crateClass);
+      const isHorde     = isHordeCrate(crateClass);
+      const isAbNormal  = isAbNormalCrate(crateClass);
+      const isAbDungeon = isAbDungeonCrate(crateClass);
+      const isAbSurface = isAbSurfaceCrate(crateClass);
+      const isSpecial   = isSpecialCrate(crateClass);
+
+      // Filter "mission" means crates should be excluded entirely
+      if (typeFilter === "mission") continue;
+
+      if (typeFilter === "cave"      && !isCave) continue;
+      if (typeFilter === "ocean"     && !isOcean) continue;
+      if (typeFilter === "osd"       && !isHorde) continue;
+      if (typeFilter === "abnormal"  && !isAbNormal) continue;
+      if (typeFilter === "abdungeon" && !isAbDungeon) continue;
+      if (typeFilter === "absurface" && !isAbSurface) continue;
+      if (typeFilter === "artifact"  && !isArtifact) continue;
+      if (typeFilter === "normal"    && (isSpecial || isArtifact || isHorde)) continue;
     }
 
     const value = `crate:${crateId}`;
@@ -1543,24 +1571,29 @@ function rebuildLootIndices(){
   // --- mission loot sources on this map ---
   const missionClasses = missionClassesUsedOnCurrentMap();
 
-  for (const missionClass of missionClasses){
-    const m = loot.m?.[missionClass];
-    if (!m) continue;
+  // Missions only appear when filter is "all" or "mission"
+  const showMissions = typeFilter === "all" || typeFilter === "mission";
 
-    const structs = Array.isArray(m.ls) ? m.ls : [];
-    for (const structClass of structs){
-      if (!structClass || !loot.ls?.[structClass]) continue;
+  if (showMissions) {
+    for (const missionClass of missionClasses){
+      const m = loot.m?.[missionClass];
+      if (!m) continue;
 
-      const value = `mission:${missionClass}:${structClass}`;
-      const label = missionDisplayName(missionClass);
+      const structs = Array.isArray(m.ls) ? m.ls : [];
+      for (const structClass of structs){
+        if (!structClass || !loot.ls?.[structClass]) continue;
 
-      State.crateOptions.push({ value, label });
-      State.crateNameToRef.set(value, {
-        kind: "mission",
-        missionClass,
-        missionName: m.n || missionClass,
-        lootStructClass: structClass
-      });
+        const value = `mission:${missionClass}:${structClass}`;
+        const label = missionDisplayName(missionClass);
+
+        State.crateOptions.push({ value, label });
+        State.crateNameToRef.set(value, {
+          kind: "mission",
+          missionClass,
+          missionName: m.n || missionClass,
+          lootStructClass: structClass
+        });
+      }
     }
   }
 
@@ -1942,7 +1975,7 @@ async function ensureLootAndItemsLoaded() {
       rebuildLootIndices();
 
       // If we're currently in a loot-dependent mode, refresh the UI
-      if (State.mode === "crate" || State.mode === "item") {
+      if (State.mode === "crate" || State.mode === "item" || State.mode === "dino") {
         rebuildSelectionSelect();
         render();
       }
@@ -2804,7 +2837,7 @@ function applyEmbedRestrictions(){
   }
 
   if (EMBED_MODE_LOCK) {
-    const validModes = new Set(["dino", "entry"]);
+    const validModes = new Set(["dino", "entry", "crate", "item", "note"]);
     if (validModes.has(EMBED_MODE_LOCK)) {
       State.mode = EMBED_MODE_LOCK;
       syncModeButton();
@@ -3167,6 +3200,14 @@ function rebuildSelectionSelect() {
   } else if (State.mode === "item") {
     placeholder = "(Select an Item)";
     options = State.itemNames.map(v => ({ value: v, label: v }));
+  } else if (State.mode === "note") {
+    placeholder = "(Select a Note or Dossier)";
+    const allNotes = getNoteOptionsForCurrentMap();
+    options = allNotes.map(n => ({
+      value: `note:${n[0]}`,
+      label: `${n[1]}  #${n[0]}`,  // embed index in label so search naturally finds it
+      meta: `#${n[0]}`
+    }));
   }
 
   UI.dinoSelect.innerHTML = "";
@@ -3193,6 +3234,10 @@ function rebuildSelectionSelect() {
     const newValue = UI.dinoSelect.value || "";
     State.selection = newValue;
     State.selections[State.mode] = newValue;
+    // For note mode, sync noteViewState.selected from the selection value
+    if (State.mode === "note" && newValue.startsWith("note:")) {
+      noteViewState.selected = noteFromSelection(newValue);
+    }
     render();
   };
 
@@ -3219,37 +3264,112 @@ function rebuildSelectionSelect() {
       }
     : null;
 
-  const crateDropdownToolbar = (State.mode === "crate" && !activeSourceIsOfficial())
+  const crateDropdownToolbar = State.mode === "crate"
     ? ({ rebuild }) => {
         const bar = document.createElement("div");
         bar.className = "dd-source-toolbar";
+        bar.style.cssText = "display:flex; flex-wrap:wrap; gap:4px;";
 
-        const pill = document.createElement("button");
-        pill.type = "button";
-        pill.className = "dd-source-mode-btn" + (infoPanelState.showAllCrates ? " is-on" : "");
-        pill.textContent = infoPanelState.showAllCrates ? "All crates" : "Mod crates";
-        pill.title = infoPanelState.showAllCrates
-          ? "Showing all crates — click to show mod crates only"
-          : "Showing mod crates only — click to show all";
-        pill.onclick = () => {
-          infoPanelState.showAllCrates = !infoPanelState.showAllCrates;
-          rebuildLootIndices();
-          rebuildSelectionSelect();
-          // Re-open the dropdown so the user sees the updated list
-          UI.dinoFancy?.querySelector(".dd-btn")?.click();
-          // Re-render panel if a crate is selected
-          if (State.selection) render();
-        };
-        bar.appendChild(pill);
+        // Mod filter pill — only when a mod source is active
+        if (!activeSourceIsOfficial()) {
+          const modPill = document.createElement("button");
+          modPill.type = "button";
+          modPill.className = "dd-source-mode-btn" + (infoPanelState.showAllCrates ? " is-on" : "");
+          modPill.textContent = infoPanelState.showAllCrates ? "All crates" : "Mod crates";
+          modPill.title = infoPanelState.showAllCrates
+            ? "Showing all crates — click to show mod only"
+            : "Showing mod crates only — click to show all";
+          modPill.onclick = () => {
+            infoPanelState.showAllCrates = !infoPanelState.showAllCrates;
+            rebuildLootIndices();
+            rebuildSelectionSelect();
+            UI.dinoFancy?.querySelector(".dd-btn")?.click();
+            if (State.selection) render();
+          };
+          bar.appendChild(modPill);
+        }
+
+        // Type filter pills: All | Normal | Cave | Artifact
+        const pillRow = document.createElement("div");
+        pillRow.style.cssText = "display:flex; gap:4px; flex-wrap:wrap; width:100%; margin-top:2px;";
+
+        // Build filter pills based on what's actually present on this map.
+        // We scan the supply legend and mission legend to decide which pills to show.
+        const isAb = State.mapId === "Aberration";
+        const mapMeta_ = MAPS.find(m => m.id === State.mapId);
+        const geom_   = Global.mapGeom.get(mapMeta_?.geomShort);
+        const legend_ = geom_?.supplyLegend || [];
+
+        const classes_ = legend_.map(row => (row.bp||"").split(".").pop());
+        const hasNormal   = !isAb && classes_.some(c => {
+          const cl = c.toLowerCase();
+          return cl.includes("supplycr") && !cl.includes("cave") && !cl.includes("ocean") &&
+                 !cl.includes("high") && !cl.includes("underwater") && !cl.includes("horde") &&
+                 !cl.includes("artifact") && !cl.includes("dungeon") && !cl.includes("aberrant_surface");
+        });
+        const hasCave     = !isAb && classes_.some(c => isCaveCrate(c));
+        const hasOceanReg = classes_.some(c => { const cl = c.toLowerCase(); return cl.includes("ocean") && !cl.includes("high"); });
+        const hasDesert   = classes_.some(c => { const cl = c.toLowerCase(); return cl.includes("high"); });
+        const hasOcean    = hasOceanReg || hasDesert;
+        const oceanLabel  = hasOceanReg && hasDesert ? "Ocean / Desert"
+                          : hasDesert                ? "Desert"
+                          : "Ocean";
+        const hasArtifact = classes_.some(c => c.toLowerCase().includes("artifact"));
+        const hasMissions = (missionClassesUsedOnCurrentMap?.()?.size || 0) > 0;
+
+        // Horde crates come from the horde legend, not supply legend
+        const hordeLegend_ = geom_?.hordeLegend || [];
+        const hasHorde    = hordeLegend_.some(row => {
+          const cl = ((row.bp||"").split(".").pop()).toLowerCase();
+          return cl.includes("supplycrate") && cl.includes("horde");
+        });
+
+        // Aberration always has cave/dungeon/surface
+        const hasAbNormal  = isAb && classes_.some(c => isAbNormalCrate(c));
+        const hasAbDungeon = isAb && classes_.some(c => isAbDungeonCrate(c));
+        const hasAbSurface = isAb && classes_.some(c => isAbSurfaceCrate(c));
+
+        const typeFilterOptions = [
+          { id: "all", label: "All" }
+        ];
+        if (hasNormal)     typeFilterOptions.push({ id: "normal",    label: "Normal" });
+        if (hasCave)       typeFilterOptions.push({ id: "cave",      label: "Cave" });
+        if (hasOcean)      typeFilterOptions.push({ id: "ocean",     label: oceanLabel });
+        if (hasHorde)      typeFilterOptions.push({ id: "osd",       label: "OSD" });
+        if (hasAbNormal)   typeFilterOptions.push({ id: "abnormal",  label: "Cave" });
+        if (hasAbDungeon)  typeFilterOptions.push({ id: "abdungeon", label: "Dungeon" });
+        if (hasAbSurface)  typeFilterOptions.push({ id: "absurface", label: "Surface" });
+        if (hasArtifact)   typeFilterOptions.push({ id: "artifact",  label: "Artifacts" });
+        if (hasMissions)   typeFilterOptions.push({ id: "mission",   label: "Missions" });
+
+        typeFilterOptions.forEach(tf => {
+          const pill = document.createElement("button");
+          pill.type = "button";
+          pill.className = "dd-source-mode-btn" + ((infoPanelState.crateTypeFilter||"all") === tf.id ? " is-on" : "");
+          pill.textContent = tf.label;
+          pill.onclick = () => {
+            infoPanelState.crateTypeFilter = tf.id;
+            rebuildLootIndices();
+            rebuildSelectionSelect();
+            UI.dinoFancy?.querySelector(".dd-btn")?.click();
+            if (State.selection) render();
+          };
+          pillRow.appendChild(pill);
+        });
+        bar.appendChild(pillRow);
         return bar;
       }
+    : null;
+
+  const noteDropdownToolbar = State.mode === "note"
+    ? buildNoteDropdownToolbar
     : null;
 
   mountFancyDropdown(
     UI.dinoSelect,
     UI.dinoFancy,
     placeholder.replace(/[()]/g, ""),
-    { buildToolbar: entryDropdownToolbar || crateDropdownToolbar }
+    { buildToolbar: entryDropdownToolbar || crateDropdownToolbar || noteDropdownToolbar }
   );
 }
 
