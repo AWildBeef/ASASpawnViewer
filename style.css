@@ -45,7 +45,7 @@
   --dd-dino-max: min(33vh, 300px);
 
   /* Dropdown list max heights (mobile) */
-  --dd-map-max-m: min(38vh, 250px);
+  --dd-map-max-m: min(55vh, 285px);
   --dd-source-max-m: min(38vh, 245px);
   --dd-dino-max-m: min(34vh, 225px);
 
@@ -5031,10 +5031,6 @@ body[data-mode="dino"] #dinoInfoPanel[data-tab="loot"] .dino-loot-section-head .
   filter: drop-shadow(0 1px 2px rgba(0,0,0,.55));
 }
 
-body[data-mode="note"] .mode-toggle {
-  background: rgba(var(--accent-rgb), .18);
-}
-
 /* ── Dark tooltip (tribute terminals, player starts, obelisks) ─ */
 .leaflet-tooltip.dark-tooltip {
   background: rgba(18, 22, 30, 0.92);
@@ -6532,4 +6528,73 @@ body[data-mode="item"] #dinoInfoPanel[data-tab="bosses"] .info-row{
   border-radius: 3px;
   background: rgba(255,255,255,.06);
   color: var(--text-2, #d0dde6);
+}
+
+/* ============================================================
+   LAYER PICKER (multi-layer maps like Genesis)
+   ============================================================ */
+.layer-picker{
+  position: absolute;
+  bottom: 80px;   /* clears the .coord-display GPS badge at bottom:44px */
+  right: 8px;
+  z-index: 800;
+  display: flex;
+  gap: 2px;
+  border-radius: 8px;
+  background: rgba(10, 18, 26, .88);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow: 0 2px 10px rgba(0,0,0,.4);
+  padding: 3px;
+  pointer-events: auto;
+}
+.layer-picker-btn{
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-3, #8fa8b8);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, color .15s;
+}
+.layer-picker-btn:hover{
+  background: rgba(255,255,255,.08);
+  color: var(--text-1, #f0fbff);
+}
+.layer-picker-btn.is-active{
+  background: rgba(var(--accent-rgb, 80,180,220), .25);
+  color: var(--text-1, #f0fbff);
+}
+
+/* ── Zoom-to-entry (Dino panel) ─────────────────────────── */
+.dv-entry-zoom{
+  background: transparent;
+  border: none;
+  color: var(--text-2, #9fb3c8);
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 6px;
+  flex: 0 0 auto;
+}
+.dv-entry-zoom:hover{
+  color: var(--accent-bright, #7cc4ff);
+  background: rgba(255,255,255,.06);
+}
+
+/* Pulse an entry's spawn shapes after zoom-to-entry */
+@keyframes spawnZoomPulse{
+  0%, 100% { stroke-opacity: 1; }
+  50%      { stroke-opacity: .12; }
+}
+.spawn-zoom-pulse{
+  stroke-width: 5 !important;
+  animation: spawnZoomPulse .6s ease-in-out 3;
+  filter: drop-shadow(0 0 6px currentColor);
 }

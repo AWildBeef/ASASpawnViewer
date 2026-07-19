@@ -488,6 +488,9 @@ async function loadSelectedSource() {
   rebuildSelectionSelect();
   applyEmbedRestrictions();
   renderDock();
+  // renderDock rebuilds base (layer 0) imagery — put the active layer's
+  // image + picker state back so a source change doesn't desync them.
+  if (typeof reapplyActiveLayer === "function") reapplyActiveLayer();
   render();
   if (isPanelVisible("mapEntriesPanel")) {
     renderMapEntriesPanel();
@@ -1592,18 +1595,27 @@ function missionLootItemIds(missionClass){
 
   const out = [];
 
-  for (const structClass of (Array.isArray(m.ls) ? m.ls : [])){
-    const ls = lootData().ls?.[structClass];
-    if (!ls) continue;
-
-    for (const setRow of (Array.isArray(ls.s) ? ls.s : [])){
-      for (const entry of (Array.isArray(setRow?.e) ? setRow.e : [])){
+  // Resolve a list of set rows through the SAME machinery the Loot Sets tab
+  // uses: inline entries plus override (si-indexed lootset) entries.
+  const collect = (setRows) => {
+    for (const setRow of (Array.isArray(setRows) ? setRows : [])){
+      const { allEntries } = lootSetEntriesFromRow(setRow);
+      for (const entry of allEntries){
         for (const iid of (Array.isArray(entry?.i) ? entry.i : [])){
           if (Number.isInteger(iid)) out.push(iid);
         }
       }
     }
+  };
+
+  // Loot-structure route (outpost / Lost Colony missions)
+  for (const structClass of (Array.isArray(m.ls) ? m.ls : [])){
+    const ls = lootData().ls?.[structClass];
+    if (ls) collect(ls.s);
   }
+
+  // Own-sets route (hunt missions and other set-carrying missions)
+  collect(m.s);
 
   return [...new Set(out)];
 }
@@ -1664,19 +1676,20 @@ function missionDiffLabelFromClass(cls){
 
 
 function missionClassesUsedOnCurrentMap(){
-  if (State.mapId !== "Lost Colony") return new Set();
-
   const geom = currentGeom();
   const legend = Array.isArray(geom?.missionLegend) ? geom.missionLegend : [];
   const points = Array.isArray(geom?.pois?.missions) ? geom.pois.missions : [];
+  const usesLayers = !!geom?.usesLayers;
 
   const out = new Set();
 
   for (const p of points){
-    for (const row of (Array.isArray(p?.m) ? p.m : [])){
-      if (!Array.isArray(row) || !row.length) continue;
+    // Layered maps: only missions dispatched on the active layer
+    if (usesLayers && Number.isFinite(Number(p?.l)) && Number(p.l) !== State.activeLayer) continue;
 
-      const idx = Number(row[0]);
+    for (const row of (Array.isArray(p?.m) ? p.m : [])){
+      // LC rows are [idx, weight]; Genesis rows are plain indexes
+      const idx = Array.isArray(row) ? Number(row[0]) : Number(row);
       if (!Number.isInteger(idx) || idx < 0 || idx >= legend.length) continue;
 
       const meta = legend[idx];
@@ -1698,9 +1711,7 @@ function missionPointHasClass(point, missionClass){
   const legend = Array.isArray(geom?.missionLegend) ? geom.missionLegend : [];
 
   for (const row of (Array.isArray(point?.m) ? point.m : [])){
-    if (!Array.isArray(row) || !row.length) continue;
-
-    const idx = Number(row[0]);
+    const idx = Array.isArray(row) ? Number(row[0]) : Number(row);
     if (!Number.isInteger(idx) || idx < 0 || idx >= legend.length) continue;
 
     const meta = legend[idx];
@@ -1714,12 +1725,31 @@ function missionPointHasClass(point, missionClass){
 }
 
 
+function missionLegendRowByClass(missionClass){
+  const geom = currentGeom();
+  const legend = Array.isArray(geom?.missionLegend) ? geom.missionLegend : [];
+
+  for (const row of legend){
+    const cls = bpClass(normalizeBp(row?.bp));
+    if (cls === missionClass) return row;
+  }
+  return null;
+}
+
 function missionLootDisplayName(missionClass){
   const m = lootData().m?.[missionClass];
-  if (!m) return missionClass;
 
-  const diff = missionDiffLabelFromClass(missionClass);
-  return `${m.n || missionClass} (${diff})`;
+  // The map's legend is the naming authority: clean base name plus
+  // size (s) and difficulty (d) exactly when the legend provides them.
+  const row = missionLegendRowByClass(missionClass);
+  if (row){
+    let label = String(row.n || m?.n || missionClass).trim();
+    if (row.s) label += ` (${row.s})`;
+    if (row.d) label += ` (${row.d})`;
+    return label;
+  }
+
+  return (m?.n) || missionClass;
 }
 
 
@@ -2486,6 +2516,21 @@ function rebuildLootIndices(){
           lootStructClass: structClass
         });
       }
+
+      // Genesis route: missions with their own item sets (m.s) — with or
+      // without loot structures
+      if (Array.isArray(m.s) && m.s.length){
+        const value = `mission:${missionClass}:own`;
+        const label = missionDisplayName(missionClass) + (structs.length ? " • Sets" : "");
+
+        State.crateOptions.push({ value, label });
+        State.crateNameToRef.set(value, {
+          kind: "mission",
+          missionClass,
+          missionName: m.n || missionClass,
+          lootStructClass: null
+        });
+      }
     }
   }
 
@@ -2587,7 +2632,25 @@ function rebuildLootIndices(){
     }
   }
 
-  for (const itemId of [...dinoDropItemIds, ...dinoHarvestItemIds]){
+  // --- foliage / resource-node items on this map ---
+  // Every harvest component present in the map's resource data (layer-
+  // scoped on layered maps) contributes its items — this is how
+  // foliage-only items like Sap or Element Shard reach the dropdown.
+  const foliageItemIds = new Set();
+  if (typeof resourceNodesForCurrentMap === "function"){
+    const rn = resourceNodesForCurrentMap();
+    const hi = loot.hi || [];
+    for (const hcIdStr of Object.keys(rn || {})){
+      const cls = hi[Number(hcIdStr)];
+      const comp = cls ? loot.dh?.[cls] : null;
+      if (!comp) continue;
+      for (const iid of (comp.i || [])){
+        foliageItemIds.add(iid);
+      }
+    }
+  }
+
+  for (const itemId of [...dinoDropItemIds, ...dinoHarvestItemIds, ...foliageItemIds]){
     State.mapItemIds.add(itemId);
     const itemRow = items.i?.[String(itemId)];
     if (!itemRow) continue;
@@ -2601,7 +2664,7 @@ function rebuildLootIndices(){
     }
   }
 
-  // Rebuild itemNames to include dino loot items
+  // Rebuild itemNames to include dino + foliage loot items
   State.itemNames = [...State.itemNameToIds.keys()].sort((a,b)=>a.localeCompare(b));
 
   // --- boss reward items + engram unlocks on this map ---
@@ -2748,10 +2811,14 @@ function crateClassFromLegendRow(row){
 function supplyCrateClassesUsedOnCurrentMap(){
   const legend = supplyLegendForCurrentMap();
   const points = supplyCratePointsForCurrentMap();
+  const usesLayers = !!currentGeom()?.usesLayers;
 
   const out = new Set();
 
   for (const p of points){
+    // Layered maps: crate list follows the active layer
+    if (usesLayers && Number.isFinite(Number(p?.l)) && Number(p.l) !== State.activeLayer) continue;
+
     for (const row of (Array.isArray(p?.c) ? p.c : [])){
       if (!Array.isArray(row) || row.length < 1) continue;
 
@@ -2774,7 +2841,10 @@ function hordeCrateClassesUsedOnCurrentMap(){
   const points = Array.isArray(geom?.pois?.hordeEvents) ? geom.pois.hordeEvents : [];
   const out = new Set();
 
+  const usesLayersH = !!geom?.usesLayers;
   for (const p of points){
+    if (usesLayersH && Number.isFinite(Number(p?.l)) && Number(p.l) !== State.activeLayer) continue;
+
     for (const rawIdx of (Array.isArray(p?.h) ? p.h : [])){
       const idx = Number(rawIdx);
       if (!Number.isInteger(idx) || idx < 0 || idx >= legend.length) continue;
@@ -3181,10 +3251,16 @@ function buildMissionGroups(point, legend){
   const grouped = new Map();
 
   for (const row of rows){
-    if (!Array.isArray(row) || !row.length) continue;
-
-    const idx = Number(row[0]);
-    const weight = row.length > 1 ? row[1] : null;
+    // Lost Colony rows are [legendIdx, weight]; Genesis rows are plain
+    // legend indexes. Accept both.
+    let idx, weight = null;
+    if (Array.isArray(row)){
+      if (!row.length) continue;
+      idx = Number(row[0]);
+      weight = row.length > 1 ? row[1] : null;
+    } else {
+      idx = Number(row);
+    }
 
     if (!Number.isInteger(idx) || idx < 0 || idx >= legend.length) continue;
 
@@ -4223,11 +4299,14 @@ function rebuildSelectionSelect() {
   } else if (State.mode === "note") {
     placeholder = "(Select a Note or Dossier)";
     const allNotes = getNoteOptionsForCurrentMap();
-    options = allNotes.map(n => ({
-      value: `note:${n[0]}`,
-      label: n[1],                // clean label, no #N suffix
-      searchExtra: String(n[0]),  // index kept for hidden search matching
-    }));
+    options = allNotes.map(raw => {
+      const n = noteStd(raw);
+      return {
+        value: `note:${n[0]}`,
+        label: n[1],                // clean label, no #N suffix
+        searchExtra: String(n[0]),  // index kept for hidden search matching
+      };
+    });
   }
 
   UI.dinoSelect.innerHTML = "";

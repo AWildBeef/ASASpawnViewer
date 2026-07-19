@@ -484,7 +484,7 @@ function hordeLegendForCurrentMap(){
 }
 
 
-function drawPlayerStarts(groups){
+function drawPlayerStarts(groups, usesLayers){
   if (!mapObj?.poiLayer) return;
   if (!poiVisibility.playerStarts) return;
   if (!groups || typeof groups !== "object") return;
@@ -499,8 +499,15 @@ function drawPlayerStarts(groups){
     for (const pt of points) {
       if (!Array.isArray(pt) || pt.length < 2) continue;
 
-      const x = Number(pt[0]);
-      const y = Number(pt[1]);
+      let x, y;
+      if (usesLayers && pt.length >= 3){
+        if (pt[0] !== State.activeLayer) continue;
+        x = Number(pt[1]);
+        y = Number(pt[2]);
+      } else {
+        x = Number(pt[0]);
+        y = Number(pt[1]);
+      }
       if (![x, y].every(Number.isFinite)) continue;
 
       const tip = [
@@ -571,7 +578,7 @@ function rebuildMapIndices(){
 
   const spawn = Global.spawn || {};
 
-  // Invalidate the world-rule index cache -- it's map-specific and must be
+  // Invalidate the world-rule index cache — it's map-specific and must be
   // rebuilt for the new map before worldOutputsForBp() is called.
   invalidateWorldRuleCache();
 
@@ -585,8 +592,8 @@ function rebuildMapIndices(){
 
   // 1) which entries are on this map?
   // entryMaps is keyed by entry id (bp-keyed schema) or class name (legacy /
-  // mod data). The UI keeps speaking class names -- unique within a map even
-  // when globally ambiguous -- and State.entryIdByClass remembers which key
+  // mod data). The UI keeps speaking class names — unique within a map even
+  // when globally ambiguous — and State.entryIdByClass remembers which key
   // holds this map's data for that class.
   State.entryIdByClass = new Map();
   for (const [key, maps] of Object.entries(spawn.entryMaps || {})){
@@ -750,7 +757,7 @@ function initMap(img,size=[2048,2048]){
   const coordDisplay = document.createElement("div");
   coordDisplay.id = "coordDisplay";
   coordDisplay.className = "coord-display";
-  coordDisplay.textContent = "--";
+  coordDisplay.textContent = "—";
   document.getElementById("mapWrap")?.appendChild(coordDisplay);
 
   function pixelToArkCoords(latlng) {
@@ -769,7 +776,7 @@ function initMap(img,size=[2048,2048]){
   map.on("mousemove", (e) => {
     const { lat, lon } = pixelToArkCoords(e.latlng);
     if (lat < -5 || lat > 105 || lon < -5 || lon > 105) {
-      coordDisplay.textContent = "--";
+      coordDisplay.textContent = "—";
     } else {
       const clampedLat = Math.max(0, Math.min(100, lat));
       const clampedLon = Math.max(0, Math.min(100, lon));
@@ -778,7 +785,7 @@ function initMap(img,size=[2048,2048]){
   });
 
   map.on("mouseout", () => {
-    coordDisplay.textContent = "--";
+    coordDisplay.textContent = "—";
   });
 
   return { map, overlay, layer, poiLayer, bounds };
@@ -820,6 +827,10 @@ async function onMapChanged(){
     image: img
   };
 
+  // ── Layer switcher for multi-layer maps ──
+  State.activeLayer = 0;
+  updateLayerPicker(geom);
+
   rebuildMapIndices();
   rebuildLootIndices();
   syncSelectionForMode(State.mode);
@@ -834,6 +845,73 @@ async function onMapChanged(){
   }
 
   render();
+}
+
+
+// Shapes drawn per spawn entry — lets zoomToSpawnEntry pulse them.
+const _spawnShapesByEntry = new Map();
+function _registerSpawnShape(entryName, layer){
+  if (!_spawnShapesByEntry.has(entryName)) _spawnShapesByEntry.set(entryName, []);
+  _spawnShapesByEntry.get(entryName).push(layer);
+}
+
+// Zoom the map to an entry's spawn zones on the current map. On layered
+// maps, hops to the layer that actually has zones if the active one has
+// none. Pulses the entry's shapes so tiny/blended boxes pop.
+function zoomToSpawnEntry(entryName){
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const geom = Global.mapGeom.get(mapMeta?.geomShort);
+  const entry = geom?.entries?.[entryName];
+  if (!entry || !mapObj?.map) return false;
+  const usesLayers = !!geom?.usesLayers;
+
+  const perLayer = new Map();
+  const addPt = (li, y, x) => {
+    const k = usesLayers ? li : 0;
+    if (!perLayer.has(k)) perLayer.set(k, []);
+    perLayer.get(k).push([y, x]);
+  };
+  for (const mgr of Object.values(entry.m || {})){
+    for (const box of mgr.b || []){
+      let li = 0, x, y, w, h;
+      if (usesLayers) [li, x, y, w, h] = box; else [x, y, w, h] = box;
+      if (![x, y, w, h].every(Number.isFinite)) continue;
+      addPt(li, y, x); addPt(li, y + h, x + w);
+    }
+    for (const pt of mgr.p || []){
+      let li = 0, x, y;
+      if (usesLayers) [li, x, y] = pt; else [x, y] = pt;
+      if (![x, y].every(Number.isFinite)) continue;
+      addPt(li, y, x);
+    }
+  }
+  if (!perLayer.size) return false;
+
+  let layerIdx = usesLayers ? State.activeLayer : 0;
+  if (!perLayer.has(layerIdx)) layerIdx = [...perLayer.keys()].sort((a, b) => a - b)[0];
+  if (usesLayers && layerIdx !== State.activeLayer) switchLayer(layerIdx);
+
+  let b = L.latLngBounds(perLayer.get(layerIdx));
+  // Don't dive to max zoom on point-sized zones — enforce a minimum span.
+  const MIN_SPAN = 120;
+  if ((b.getEast() - b.getWest()) < MIN_SPAN || (b.getNorth() - b.getSouth()) < MIN_SPAN){
+    const c = b.getCenter();
+    b = L.latLngBounds([[c.lat - MIN_SPAN / 2, c.lng - MIN_SPAN / 2],
+                        [c.lat + MIN_SPAN / 2, c.lng + MIN_SPAN / 2]]);
+  }
+  mapObj.map.fitBounds(b.pad(0.3), { animate: true });
+
+  setTimeout(() => {
+    for (const shape of _spawnShapesByEntry.get(entryName) || []){
+      const el = shape.getElement?.() || shape._path;
+      if (!el) continue;
+      el.classList.remove("spawn-zoom-pulse");
+      void el.getBoundingClientRect();
+      el.classList.add("spawn-zoom-pulse");
+      setTimeout(() => el.classList.remove("spawn-zoom-pulse"), 2400);
+    }
+  }, 80);
+  return true;
 }
 
 
@@ -906,6 +984,8 @@ function drawEntry(entryName, rarityScore){
   const entry = geom?.entries?.[entryName];
   if (!entry) return;
 
+  const usesLayers = !!geom?.usesLayers;
+
   for (const mgr of Object.values(entry.m || {})) {
 
     const meta = {
@@ -948,7 +1028,13 @@ function drawEntry(entryName, rarityScore){
 
     // boxes
     for (const box of mgr.b || []) {
-      const [x, y, w, h] = box;
+      let x, y, w, h;
+      if (usesLayers){
+        if (box[0] !== State.activeLayer) continue;
+        [, x, y, w, h] = box;
+      } else {
+        [x, y, w, h] = box;
+      }
       if (![x, y, w, h].every(Number.isFinite)) continue;
 
       const rect = L.rectangle([[y, x], [y + h, x + w]], {
@@ -957,11 +1043,30 @@ function drawEntry(entryName, rarityScore){
       }).addTo(mapObj.layer);
       rect.bindTooltip(tipHtml, tipOpts);
       wireLinkedHighlight(rect);
+      _registerSpawnShape(entryName, rect);
+
+      // Visibility floor: point-sized boxes get a constant-size dashed
+      // ring so they stay findable at any zoom.
+      if (w < 6 && h < 6){
+        const halo = L.circleMarker([y + h / 2, x + w / 2], {
+          radius: 8, color: style.color, weight: 2, fill: false,
+          opacity: 0.75, dashArray: "2 4", pane: "spawnPane"
+        }).addTo(mapObj.layer);
+        halo.bindTooltip(tipHtml, tipOpts);
+        wireLinkedHighlight(halo);
+        _registerSpawnShape(entryName, halo);
+      }
     }
 
     // points
     for (const pt of mgr.p || []) {
-      const [x, y] = pt;
+      let x, y;
+      if (usesLayers){
+        if (pt[0] !== State.activeLayer) continue;
+        [, x, y] = pt;
+      } else {
+        [x, y] = pt;
+      }
       if (![x, y].every(Number.isFinite)) continue;
 
       const ptMarker = L.circleMarker([y, x], {
@@ -976,8 +1081,92 @@ function drawEntry(entryName, rarityScore){
       }).addTo(mapObj.layer);
       ptMarker.bindTooltip(tipHtml, tipOpts);
       wireLinkedHighlight(ptMarker);
+      _registerSpawnShape(entryName, ptMarker);
     }
   }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// LAYER SWITCHER — for multi-layer maps like Genesis
+// ═══════════════════════════════════════════════════════════════════════
+
+let _layerPickerEl = null;
+
+function updateLayerPicker(geom){
+  if (_layerPickerEl){
+    _layerPickerEl.remove();
+    _layerPickerEl = null;
+  }
+
+  if (!geom?.usesLayers || !geom.layers?.length) return;
+  if (!mapObj?.map) return;
+
+  const container = mapObj.map.getContainer();
+  const bar = document.createElement("div");
+  bar.className = "layer-picker";
+  L.DomEvent.disableClickPropagation(bar);
+  L.DomEvent.disableScrollPropagation(bar);
+
+  for (let i = 0; i < geom.layers.length; i++){
+    const layer = geom.layers[i];
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `layer-picker-btn ${i === State.activeLayer ? "is-active" : ""}`;
+    btn.textContent = layer.n || `Layer ${i}`;
+    btn.onclick = () => switchLayer(i, geom);
+    bar.appendChild(btn);
+  }
+
+  container.appendChild(bar);
+  _layerPickerEl = bar;
+}
+
+function reapplyActiveLayer(){
+  // After a dock rebuild (source change), the overlay shows the base
+  // (layer 0) image. Re-apply the active layer's image and rebuild the
+  // picker so UI and imagery agree.
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const geom = Global.mapGeom.get(mapMeta?.geomShort);
+  if (!geom?.usesLayers){
+    State.activeLayer = 0;
+    return;
+  }
+  const layer = geom.layers?.[State.activeLayer];
+  if (layer?.img && mapObj?.overlay) mapObj.overlay.setUrl(layer.img);
+  updateLayerPicker(geom);
+}
+
+
+function switchLayer(layerIdx, geomOverride){
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const geom = geomOverride || Global.mapGeom.get(mapMeta?.geomShort);
+  if (!geom?.layers?.[layerIdx]) return;
+  if (layerIdx === State.activeLayer) return;
+
+  State.activeLayer = layerIdx;
+  const layer = geom.layers[layerIdx];
+
+  // Swap map image
+  if (layer.img && mapObj?.overlay){
+    mapObj.overlay.setUrl(layer.img);
+  }
+
+  // Update picker UI
+  if (_layerPickerEl){
+    _layerPickerEl.querySelectorAll(".layer-picker-btn").forEach((btn, i) => {
+      btn.classList.toggle("is-active", i === layerIdx);
+    });
+  }
+
+  // Crate/item lists are layer-scoped on layered maps — rebuild the
+  // indices AND repopulate the visible dropdown (same pair the crate
+  // type-filter pills use).
+  rebuildLootIndices();
+  if (typeof rebuildSelectionSelect === "function") rebuildSelectionSelect();
+
+  // Redraw current view
+  render();
 }
 
 
@@ -1482,6 +1671,7 @@ function toggleMapEntriesPanel(){
 
 
 function clearDraw(){
+  _spawnShapesByEntry.clear();
   mapObj?.layer.clearLayers();
   // Clean up item-view foliage layer (not the toggle state)
   if (typeof _itemFoliageLayer !== "undefined" && _itemFoliageLayer){
@@ -1539,6 +1729,22 @@ function ueToLeaflet(ue_x, ue_y) {
   ];
 }
 
+// Convert UE world coords using a specific layer's bounds (for multi-layer maps)
+function ueToLeafletForLayer(ue_x, ue_y, layerIdx) {
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const geom = Global.mapGeom.get(mapMeta?.geomShort);
+  const layer = geom?.layers?.[layerIdx];
+  if (!layer?.bounds) return ueToLeaflet(ue_x, ue_y); // fallback
+  const [minX, maxX, minY, maxY] = layer.bounds;
+  const [imgW, imgH] = geom?.size || [2048, 2048];
+  const lon = (ue_x - minX) / (maxX - minX) * 100;
+  const lat = (ue_y - minY) / (maxY - minY) * 100;
+  return [
+    (1 - lat / 100) * imgH,
+    (lon / 100) * imgW
+  ];
+}
+
 
 /* ============================================================
    CAVE / OCEAN / DESERT CRATE DETECTION
@@ -1578,7 +1784,7 @@ function isOceanCrate(crateClass) {
 // isDesertCrate is an alias for isOceanCrate - kept for potential future separation
 function isDesertCrate(crateClass) { return isOceanCrate(crateClass); }
 
-// Beaver dams -- giant beaver lodges that act as lootable supply containers.
+// Beaver dams — giant beaver lodges that act as lootable supply containers.
 // Two known classes: DenLogs_Child2 and DamLogs_Child. Matched on the
 // distinctive "...Logs_..." segment so either variant is caught.
 function isBeaverDam(crateClass) {
@@ -2181,8 +2387,8 @@ function mountPanelSwipe(container, tabs, getActive, setActive){
   let isHorizontal = false;
 
   const EDGE_GUARD_PX = 22;
-  const SWIPE_MIN_PX = 80;   // was 40 -- higher threshold means deliberate swipes only
-  const SWIPE_MAX_Y = 40;    // was 60 -- tighter vertical tolerance
+  const SWIPE_MIN_PX = 80;   // was 40 — higher threshold means deliberate swipes only
+  const SWIPE_MAX_Y = 40;    // was 60 — tighter vertical tolerance
 
   container.addEventListener("touchstart", (e) => {
     if (!e.touches || e.touches.length !== 1) return;
@@ -2636,6 +2842,7 @@ function renderPoiPanel(){
     { key: "waterVeins",        label: "Water Veins",         count: (pois.waterVeins || []).length },
     { key: "oilVeins",          label: "Oil Veins",           count: (pois.oilVeins || []).length },
     { key: "gasVeins",          label: "Gas Veins",           count: (pois.gasVeins || []).length },
+    { key: "oxygenVents",       label: "Oxygen Vents",        count: (pois.oxygenVents || []).length },
     { key: "chargeNodes",       label: "Charge Nodes",        count: (pois.chargeNodes || []).length },
     { key: "hyperChargeNodes",  label: "Hyper Charge Nodes",  count: (pois.hyperChargeNodes || []).length },
     { key: "plantZ",            label: "Wild Plant Z",        count: (pois.plantZ || []).length },
@@ -2644,6 +2851,7 @@ function renderPoiPanel(){
     { key: "iceWyvernNests",    label: "Ice Wyvern Nests",    count: (pois.iceWyvernNests || []).length },
     { key: "rockDrakeNests",    label: "Rock Drake Nests",    count: (pois.rockDrakeNests || []).length },
     { key: "deinonychusNests",  label: "Deinonychus Nests",   count: (pois.deinonychusNests || []).length },
+    { key: "magmaNests",        label: "Magmasaur Nests",     count: (pois.magmaNests || []).length },
     { key: "beachChests",       label: "Beach Crates",        count: (pois.beachChests || []).length },
     { key: "memorial",          label: "Memorial",            count: (pois.memorial || []).length },
     { key: "teleporters",       label: "Teleporters",         count: (pois.teleporters || []).length }
@@ -2704,7 +2912,7 @@ function togglePoiPanel(){
 
 
 // ═══════════════════════════════════════════════════════════════════════
-// RESOURCE PANEL -- separate dock panel for resource node toggles
+// RESOURCE PANEL — separate dock panel for resource node toggles
 // ═══════════════════════════════════════════════════════════════════════
 
 function ensureResourcePanel(){
@@ -2839,7 +3047,7 @@ function installCopyDelegation(){
       if (Number.isInteger(idx)) {
         const mapMeta = MAPS.find(m => m.id === State.mapId);
         const geom = Global.mapGeom.get(mapMeta?.geomShort);
-        const note = (geom?.pois?.explorerNotes || []).find(n => n[0] === idx);
+        const note = (geom?.pois?.explorerNotes || []).find(n => noteStd(n)[0] === idx);
         if (note) openNoteView(note);
       }
       return;
@@ -3701,7 +3909,7 @@ function missionTooltipHtml(point, legend){
     return `<div class="poi-tip-title">Mission</div>`;
   }
 
-  return groups.map(g => `
+  const blocks = groups.map(g => `
     <div class="poi-tip-block">
       <div class="poi-tip-title">${escapeHtml(g.name)}</div>
       <div class="poi-tip-lines">
@@ -3711,6 +3919,13 @@ function missionTooltipHtml(point, legend){
       </div>
     </div>
   `).join("");
+
+  // Dispatcher id — debug aid, shown small under the missions
+  const disp = typeof point?.d === "string" && point.d
+    ? `<div class="poi-tip-line" style="opacity:.55;font-size:.85em;">${escapeHtml(point.d)}</div>`
+    : "";
+
+  return blocks + disp;
 }
 
 
@@ -3724,6 +3939,17 @@ function missionMarkerColor(point, legend){
   if (kind.includes("defense")) return "#4db6ff";
   if (kind.includes("resource")) return "#7dff7a";
 
+  // Genesis mission kinds
+  if (kind.includes("hunt")) return "#ff5d5d";
+  if (kind.includes("race")) return "#ffd94d";
+  if (kind.includes("gather")) return "#7dff7a";
+  if (kind.includes("gauntlet")) return "#c47dff";
+  if (kind.includes("fishing")) return "#4dd2ff";
+  if (kind.includes("escort")) return "#ffa64d";
+  if (kind.includes("retrieve")) return "#4dffc3";
+  if (kind.includes("sport")) return "#ff7ddb";
+  if (kind.includes("eel")) return "#8899ff";
+
   return "#ff66cc";
 }
 
@@ -3731,11 +3957,16 @@ function addMissionMarkers(points, { layer = mapObj?.poiLayer } = {}) {
   if (!layer || !Array.isArray(points)) return;
 
   const legend = missionLegendForCurrentMap();
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const usesLayers = !!Global.mapGeom.get(mapMeta?.geomShort)?.usesLayers;
 
   for (const p of points){
     const x = Number(p?.x);
     const y = Number(p?.y);
     if (![x, y].every(Number.isFinite)) continue;
+
+    // Layered maps (Genesis): each dispatcher belongs to one layer (`l`)
+    if (usesLayers && Number.isFinite(Number(p?.l)) && Number(p.l) !== State.activeLayer) continue;
 
     const fillColor = missionMarkerColor(p, legend);
 
@@ -3968,9 +4199,19 @@ function drawSimpleDotPois(points, visKey, color, label, outlineColor) {
   // different ring). A custom ring is drawn slightly thicker so it reads.
   const ring = outlineColor || "#111";
   const ringWeight = outlineColor ? 2.5 : 1.5;
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const usesLayers = !!Global.mapGeom.get(mapMeta?.geomShort)?.usesLayers;
   for (const pt of (Array.isArray(points) ? points : [])) {
-    const x = Number(pt?.[0] ?? pt?.x);
-    const y = Number(pt?.[1] ?? pt?.y);
+    let x, y;
+    if (usesLayers && Array.isArray(pt) && pt.length >= 3){
+      // Layered maps: points are [layer, x, y]
+      if (Number(pt[0]) !== State.activeLayer) continue;
+      x = Number(pt[1]);
+      y = Number(pt[2]);
+    } else {
+      x = Number(pt?.[0] ?? pt?.x);
+      y = Number(pt?.[1] ?? pt?.y);
+    }
     if (![x, y].every(Number.isFinite)) continue;
     L.circleMarker([y, x], {
       radius: 5, color: ring, weight: ringWeight,
@@ -3984,6 +4225,10 @@ function drawSimpleDotPois(points, visKey, color, label, outlineColor) {
 
 function drawNestPois(points, visKey, color, label) {
   if (!mapObj?.poiLayer || !poiVisibility[visKey]) return;
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const geom = Global.mapGeom.get(mapMeta?.geomShort);
+  const usesLayers = !!geom?.usesLayers;
+
   const size = 16;
   const icon = L.divIcon({
     className: `poi-nest-icon`,
@@ -3994,8 +4239,15 @@ function drawNestPois(points, visKey, color, label) {
     iconSize: [size, size], iconAnchor: [size/2, size/2]
   });
   for (const pt of (Array.isArray(points) ? points : [])) {
-    const x = Number(pt?.[0] ?? pt?.x);
-    const y = Number(pt?.[1] ?? pt?.y);
+    let x, y;
+    if (usesLayers && Array.isArray(pt) && pt.length >= 3){
+      if (pt[0] !== State.activeLayer) continue;
+      x = Number(pt[1]);
+      y = Number(pt[2]);
+    } else {
+      x = Number(pt?.[0] ?? pt?.x);
+      y = Number(pt?.[1] ?? pt?.y);
+    }
     if (![x, y].every(Number.isFinite)) continue;
     L.marker([y, x], { icon, pane: "poiPane" })
       .addTo(mapObj.poiLayer)
@@ -4041,7 +4293,7 @@ function isDossierNote(name) {
 }
 
 function noteTooltipHtml(note, { hideJump = false } = {}) {
-  const [idx, name, ue_x, ue_y] = note;
+  const [idx, name, ue_x, ue_y] = noteStd(note);
   const gps = ueToGps(ue_x, ue_y);
   const gpsStr = gps ? `${gps.lat.toFixed(1)}, ${gps.lon.toFixed(1)}` : "N/A";
   const type = isDossierNote(name) ? "Dossier" : "Note";
@@ -4055,6 +4307,10 @@ function noteTooltipHtml(note, { hideJump = false } = {}) {
 
 function drawExplorerNotePois(notes) {
   if (!mapObj?.poiLayer || !poiVisibility.explorerNotes) return;
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const geom = Global.mapGeom.get(mapMeta?.geomShort);
+  const usesLayers = !!geom?.usesLayers;
+
   const size = 16;
   const icon = L.divIcon({
     className: "poi-note-icon",
@@ -4067,12 +4323,29 @@ function drawExplorerNotePois(notes) {
     iconSize: [size, size], iconAnchor: [size/2, size/2]
   });
   for (const note of notes) {
-    if (!Array.isArray(note) || note.length < 4 || isDossierNote(note[1])) continue;
-    const latlng = ueToLeaflet(note[2], note[3]);
+    if (!Array.isArray(note)) continue;
+
+    let layerIdx, noteIdx, name, ueX, ueY;
+    if (usesLayers && note.length >= 6) {
+      [layerIdx, noteIdx, name, ueX, ueY] = note;
+      if (layerIdx !== State.activeLayer) continue;
+    } else if (note.length >= 5) {
+      [noteIdx, name, ueX, ueY] = note;
+      layerIdx = null;
+    } else continue;
+
+    if (isDossierNote(noteIdx)) continue;
+
+    const latlng = layerIdx != null
+      ? ueToLeafletForLayer(ueX, ueY, layerIdx)
+      : ueToLeaflet(ueX, ueY);
     if (!latlng) continue;
+
+    // Build note array in standard format for tooltip
+    const stdNote = layerIdx != null ? note.slice(1) : note;
     L.marker(latlng, { icon, pane: "poiPane" })
       .addTo(mapObj.poiLayer)
-      .bindTooltip(noteTooltipHtml(note), {
+      .bindTooltip(noteTooltipHtml(stdNote), {
         direction: "auto", sticky: false, offset: [0,-10],
         opacity: 0.97, className: "note-tooltip note-tooltip--interactive", autoPan: true,
         interactive: true
@@ -4082,6 +4355,10 @@ function drawExplorerNotePois(notes) {
 
 function drawDossierPois(notes) {
   if (!mapObj?.poiLayer || !poiVisibility.dinoDossiers) return;
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const geom = Global.mapGeom.get(mapMeta?.geomShort);
+  const usesLayers = !!geom?.usesLayers;
+
   const size = 16;
   const icon = L.divIcon({
     className: "poi-dossier-icon",
@@ -4094,12 +4371,28 @@ function drawDossierPois(notes) {
     iconSize: [size, size], iconAnchor: [size/2, size/2]
   });
   for (const note of notes) {
-    if (!Array.isArray(note) || note.length < 4 || !isDossierNote(note[1])) continue;
-    const latlng = ueToLeaflet(note[2], note[3]);
+    if (!Array.isArray(note)) continue;
+
+    let layerIdx, noteIdx, name, ueX, ueY;
+    if (usesLayers && note.length >= 6) {
+      [layerIdx, noteIdx, name, ueX, ueY] = note;
+      if (layerIdx !== State.activeLayer) continue;
+    } else if (note.length >= 5) {
+      [noteIdx, name, ueX, ueY] = note;
+      layerIdx = null;
+    } else continue;
+
+    if (!isDossierNote(noteIdx)) continue;
+
+    const latlng = layerIdx != null
+      ? ueToLeafletForLayer(ueX, ueY, layerIdx)
+      : ueToLeaflet(ueX, ueY);
     if (!latlng) continue;
+
+    const stdNote = layerIdx != null ? note.slice(1) : note;
     L.marker(latlng, { icon, pane: "poiPane" })
       .addTo(mapObj.poiLayer)
-      .bindTooltip(noteTooltipHtml(note), {
+      .bindTooltip(noteTooltipHtml(stdNote), {
         direction: "auto", sticky: true, offset: [0,-10],
         opacity: 0.97, className: "note-tooltip", autoPan: true
       });
@@ -4205,7 +4498,7 @@ const RN_PERF_THRESHOLD = 15000;
 
 // ── Image-based dot layer for high-count resource nodes ──
 // Renders all dots once onto a 2048×2048 canvas, then hands it to
-// L.ImageOverlay which Leaflet transforms natively via CSS — zero JS
+// L.ImageOverlay which Leaflet transforms natively via CSS -- zero JS
 // per frame during pan/zoom.  Dots scale with map zoom (acceptable for
 // dense coverage categories like stone/coral).
 const ImageDotLayer = L.Layer.extend({
@@ -4226,7 +4519,7 @@ const ImageDotLayer = L.Layer.extend({
             weight = 1, fillOpacity = 0.7 } = this._opts;
     const r = radius;
 
-    // Batch fill — flip Y since canvas Y=0 is top but map lat=0 is top
+    // Batch fill -- flip Y since canvas Y=0 is top but map lat=0 is top
     ctx.globalAlpha = fillOpacity;
     ctx.fillStyle = fill;
     ctx.beginPath();
@@ -4292,6 +4585,24 @@ function decodeRnBinary(b64){
     pts[i] = [px, py];
   }
   return pts;
+}
+
+function resourceNodesForCurrentMap(){
+  const mapMeta = MAPS.find(m => m.id === State.mapId);
+  const geom = Global.mapGeom.get(mapMeta?.geomShort);
+  const rn = geom?.pois?.rn;
+  if (!rn || typeof rn !== "object") return {};
+
+  // Layered maps nest per-layer blocks: values are objects instead of
+  // the flat map's base64 strings.
+  if (geom?.usesLayers){
+    const first = Object.values(rn)[0];
+    if (first && typeof first === "object" && !Array.isArray(first)){
+      return rn[String(State.activeLayer)] || {};
+    }
+  }
+
+  return rn;
 }
 
 function drawResourceNodes(rn){
@@ -4413,20 +4724,27 @@ function drawPois(){
   if (!geom?.pois) return;
 
   const pois = geom.pois;
+  const usesLayers = !!geom?.usesLayers;
+
+  // Filter supply crates by active layer (layered maps use 'l' key)
+  const allCrates = pois.supplyCrates || [];
+  const crates = usesLayers
+    ? allCrates.filter(p => p.l === undefined || p.l === State.activeLayer)
+    : allCrates;
 
   drawPoiGroup(pois.tributeTerminals, "tributeTerminals");
-  drawSupplyCratePois(pois.supplyCrates || []);
+  drawSupplyCratePois(crates);
   if (isAbMap()) {
-    drawAbNormalCratePois(pois.supplyCrates || []);
-    drawAbDungeonCratePois(pois.supplyCrates || []);
-    drawAbSurfaceCratePois(pois.supplyCrates || []);
+    drawAbNormalCratePois(crates);
+    drawAbDungeonCratePois(crates);
+    drawAbSurfaceCratePois(crates);
   } else {
-    drawCaveCratePois(pois.supplyCrates || []);
-    drawOceanCratePois(pois.supplyCrates || []);
-    drawBeaverDamPois(pois.supplyCrates || []);
+    drawCaveCratePois(crates);
+    drawOceanCratePois(crates);
+    drawBeaverDamPois(crates);
   }
-  drawArtifactCratePois(pois.supplyCrates || []);
-  drawPlayerStarts(pois.playerStarts);
+  drawArtifactCratePois(crates);
+  drawPlayerStarts(pois.playerStarts, usesLayers);
   drawExplorerNotePois(pois.explorerNotes || []);
   drawDossierPois(pois.explorerNotes || []);
   drawMissionPois(pois.missions || []);
@@ -4436,6 +4754,7 @@ function drawPois(){
   drawSimpleDotPois(pois.waterVeins,       "waterVeins",       "#5ab4ff", "Water Vein");
   drawSimpleDotPois(pois.oilVeins,         "oilVeins",         "#555",    "Oil Vein");
   drawSimpleDotPois(pois.gasVeins,         "gasVeins",         "#ff4dff", "Gas Vein");
+  drawSimpleDotPois(pois.oxygenVents,      "oxygenVents",      "#9fdcff", "Oxygen Vent");
   drawSimpleDotPois(pois.chargeNodes,      "chargeNodes",      "#00ff55", "Charge Node");
   drawSimpleDotPois(pois.hyperChargeNodes, "hyperChargeNodes", "#00ff55", "Hyper Charge Node", "#aa55ff");
   drawSimpleDotPois(pois.plantZ,           "plantZ",           "#00eeff", "Wild Plant Z");
@@ -4444,12 +4763,13 @@ function drawPois(){
   drawNestPois(pois.iceWyvernNests,        "iceWyvernNests",   "#88eeff", "Ice Wyvern Nest");
   drawNestPois(pois.rockDrakeNests,        "rockDrakeNests",   "#00ffcc", "Rock Drake Nest");
   drawNestPois(pois.deinonychusNests,      "deinonychusNests", "#ff5050", "Deinonychus Nest");
+  drawNestPois(pois.magmaNests,            "magmaNests",       "#ff6600", "Magmasaur Nest");
   drawSimpleDotPois(pois.beachChests,      "beachChests",      "#f0c040", "Beach Crate");
   drawSimpleDotPois(pois.memorial,         "memorial",         "#f0f0f0", "Memorial");
   drawTeleporterPois(pois.teleporters);
 
-  // ── Resource nodes ──
-  drawResourceNodes(pois.rn || {});
+  // ── Resource nodes (layer-scoped on layered maps) ──
+  drawResourceNodes(resourceNodesForCurrentMap());
 
   // ── Refresh open panels so counts/items stay current after map switch ──
   const poiPanel = document.getElementById("poiPanel");

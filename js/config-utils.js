@@ -41,7 +41,8 @@ const MAPS = [
       { id:"sat",  label:"Satellite", url:"maps/astraeos.webp" }
     ],
     defaultBg:"sat"
-  }
+  },
+  { id:"Genesis", geomShort:"Genesis", mapCode:"Genesis 1", image:"genesis.webp" }
 ];
 const jsonCache = {};
 
@@ -156,6 +157,8 @@ const State = {
   bossNameToIndex: new Map(),
   bossItemIndex: new Map(),  // itemId -> [bossName1, ...]
   
+  activeLayer: 0,  // for multi-layer maps (Genesis)
+  
   mapCrateIds: new Set(),
   mapItemIds: new Set(),
   
@@ -167,6 +170,19 @@ const entryVisibility = {};
 
 let dockControl = null;
 let dockState = { mapMeta: null, cfg: null };
+
+// Explorer note rows come in two shapes: classic [idx, name, x, y, z]
+// and layered [layer, idx, name, x, y, z] (Genesis). Shape-detected so
+// both coexist everywhere notes are read.
+function noteIsLayered(note){
+  return Array.isArray(note) && note.length >= 6 && typeof note[2] === "string";
+}
+function noteStd(note){
+  return noteIsLayered(note) ? note.slice(1) : note;
+}
+function noteLayerOf(note){
+  return noteIsLayered(note) ? Number(note[0]) : null;
+}
 
 const poiVisibility = {
   tributeTerminals: true,
@@ -190,6 +206,7 @@ const poiVisibility = {
   waterVeins: false,
   oilVeins: false,
   gasVeins: false,
+  oxygenVents: false,
   chargeNodes: false,
   hyperChargeNodes: false,
   plantZ: false,
