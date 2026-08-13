@@ -4334,7 +4334,7 @@ function drawExplorerNotePois(notes) {
       layerIdx = null;
     } else continue;
 
-    if (isDossierNote(noteIdx)) continue;
+    if (isDossierNote(name)) continue;
 
     const latlng = layerIdx != null
       ? ueToLeafletForLayer(ueX, ueY, layerIdx)
@@ -4382,7 +4382,7 @@ function drawDossierPois(notes) {
       layerIdx = null;
     } else continue;
 
-    if (!isDossierNote(noteIdx)) continue;
+    if (!isDossierNote(name)) continue;
 
     const latlng = layerIdx != null
       ? ueToLeafletForLayer(ueX, ueY, layerIdx)

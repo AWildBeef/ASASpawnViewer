@@ -40,7 +40,7 @@
   --mod-w-mobile-collapsed: 100px;
 
   /* Dropdown list max heights (desktop) */
-  --dd-map-max: min(55vh, 300px);
+  --dd-map-max: min(33vh, 265px);
   --dd-source-max: min(33vh, 250px);
   --dd-dino-max: min(33vh, 300px);
 
@@ -5190,6 +5190,11 @@ body[data-mode="item"] #dinoInfoPanel[data-tab="bosses"] .info-row{
 }
 
 /* ── Note tooltip dark background ─────────────────────────────── */
+/* ── Note View panel ───────────────────────────────────────── */
+body[data-mode="note"] #dinoInfoPanel .fp-body {
+  padding-top: 8px;
+}
+
 .leaflet-tooltip.note-tooltip {
   background: rgba(18, 22, 30, 0.92);
   border: 1px solid rgba(255,255,255,.12);

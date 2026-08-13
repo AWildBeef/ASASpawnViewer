@@ -435,6 +435,13 @@ const exportPanelState = {
     includeMaps: false,
     includeCrateMaps: false,
     includeMissions: true
+  },
+
+  note: {
+    includeGps: true,
+    includeUeCoords: false,
+    includeCommands: true,
+    includeIndex: true
   }
 };
 /* Split from app_embed.js lines 252-721 */
@@ -1123,23 +1130,145 @@ function buildExportReport(){
   if (exportPanelState.reportType === "entry") return buildEntryReport();
   if (exportPanelState.reportType === "crate") return buildCrateReport();
   if (exportPanelState.reportType === "item") return buildItemReport();
+  if (exportPanelState.reportType === "note") return buildNoteReport();
   return buildMapReport();
 }
 
-function exportCurrentReportJSON(){
-  const report = buildExportReport();
-  const src = currentSourceMeta();
+async function buildNoteReport(){
+  const opts = exportPanelState.note;
+  const scope = exportPanelState.scope;
 
+  // Collect maps to export
+  const mapsToExport = [];
+  if (scope === "current_map" || scope === "current_layer"){
+    mapsToExport.push(MAPS.find(m => m.id === State.mapId));
+  } else {
+    for (const m of MAPS) mapsToExport.push(m);
+  }
+
+  // For current_layer scope, filter to only notes on the active layer.
+  const filterLayer = scope === "current_layer" ? State.activeLayer : null;
+
+  // Ensure geom data is loaded for all maps we need
+  for (const mapMeta of mapsToExport){
+    if (!mapMeta) continue;
+    if (!Global.mapGeom.has(mapMeta.geomShort)){
+      try {
+        const geom = await loadJSON(`${PATHS.geomDir}/${mapMeta.geomShort}_geom.json`);
+        Global.mapGeom.set(mapMeta.geomShort, geom);
+      } catch(e) { /* map geom not available, skip */ }
+    }
+  }
+
+  const result = {};
+  for (const mapMeta of mapsToExport){
+    if (!mapMeta) continue;
+    const geom = Global.mapGeom.get(mapMeta.geomShort);
+    const notes = Array.isArray(geom?.pois?.explorerNotes) ? geom.pois.explorerNotes : [];
+    if (!notes.length) continue;
+
+    const mapNotes = [];
+    const usesLayers = geom.usesLayers && geom.layers?.length > 1;
+
+    for (const note of notes){
+      if (!Array.isArray(note) || note.length < 2) continue;
+      // Layer filtering for current_layer scope
+      if (filterLayer != null){
+        const nl = noteLayerOf(note);
+        if (nl != null && nl !== filterLayer) continue;
+      }
+      const [idx, name, ue_x, ue_y, ue_z] = noteStd(note);
+      const entry = { name };
+      if (opts.includeIndex) entry.index = idx;
+      if (opts.includeGps){
+        // For layered maps, use the note's own layer bounds for GPS conversion.
+        let noteBounds = null;
+        if (usesLayers){
+          const nl = noteLayerOf(note);
+          const layerIdx = nl != null ? nl : 0;
+          const lb = geom.layers[layerIdx]?.bounds;
+          if (Array.isArray(lb) && lb.length >= 4)
+            noteBounds = { minX: lb[0], maxX: lb[1], minY: lb[2], maxY: lb[3] };
+        }
+        if (!noteBounds){
+          const b = geom.bounds;
+          if (Array.isArray(b) && b.length >= 4)
+            noteBounds = { minX: b[0], maxX: b[1], minY: b[2], maxY: b[3] };
+        }
+        const gps = ueToGpsWithBounds(ue_x, ue_y, noteBounds);
+        if (gps) entry.gps = { lat: Number(gps.lat.toFixed(1)), lon: Number(gps.lon.toFixed(1)) };
+      }
+      if (opts.includeUeCoords){
+        entry.ue = { x: Math.round(ue_x), y: Math.round(ue_y), z: Math.round(ue_z || 0) };
+      }
+      if (opts.includeCommands){
+        const tpZ = Math.round((ue_z || 0) + 200);
+        entry.teleportCommand = `cheat SPI ${Math.round(ue_x)} ${Math.round(ue_y)} ${tpZ}`;
+        entry.unlockCommand = `cheat GiveExplorerNote ${idx}`;
+      }
+      mapNotes.push(entry);
+    }
+
+    if (scope === "current_map" || scope === "current_layer"){
+      return mapNotes;
+    }
+    result[mapMeta.id] = mapNotes;
+  }
+  return result;
+}
+
+async function exportCurrentReportJSON(){
+  const report = await Promise.resolve(buildExportReport());
+  const src = currentSourceMeta();
   const type = exportPanelState.reportType;
 
   const fileBase = [
     "export",
     type,
     safeFilePart(src.label || src.id || "source"),
-    safeFilePart(State.mapId || "")
+    type === "note" && exportPanelState.scope !== "current_map" ? "all_maps" : safeFilePart(State.mapId || "")
   ].filter(Boolean).join("_");
 
   downloadJSON(`${fileBase}.json`, report);
+}
+
+async function exportCurrentReportTXT(){
+  const report = await Promise.resolve(buildExportReport());
+  const src = currentSourceMeta();
+  const type = exportPanelState.reportType;
+
+  const fileBase = [
+    "export",
+    type,
+    safeFilePart(src.label || src.id || "source"),
+    type === "note" && exportPanelState.scope !== "current_map" ? "all_maps" : safeFilePart(State.mapId || "")
+  ].filter(Boolean).join("_");
+
+  downloadText(`${fileBase}.txt`, reportToText(report, type));
+}
+
+function reportToText(report, type){
+  if (type === "note") return noteReportToText(report);
+  return JSON.stringify(report, null, 2);
+}
+
+function noteReportToText(report){
+  const lines = [];
+  const renderNotes = (notes, mapLabel) => {
+    if (mapLabel) lines.push(`\n=== ${mapLabel} ===`);
+    for (const n of notes){
+      const parts = [n.name];
+      if (n.index != null) parts[0] = `[${n.index}] ${n.name}`;
+      if (n.gps) parts.push(`GPS: ${n.gps.lat}, ${n.gps.lon}`);
+      if (n.ue) parts.push(`UE: ${n.ue.x} ${n.ue.y} ${n.ue.z}`);
+      if (n.teleportCommand) parts.push(`TP: ${n.teleportCommand}`);
+      if (n.unlockCommand) parts.push(`Unlock: ${n.unlockCommand}`);
+      lines.push(parts.join("  |  "));
+    }
+  };
+  if (Array.isArray(report)) renderNotes(report);
+  else for (const [mapName, notes] of Object.entries(report)) renderNotes(notes, mapName);
+  return lines.join("\n");
 }
 
 
